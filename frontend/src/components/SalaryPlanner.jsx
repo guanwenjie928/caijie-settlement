@@ -287,6 +287,103 @@ function generateCashoutPlan(enabledEmployees, targetAmount) {
   });
 }
 
+// ── 三层瀑布套现算法 ───────────────────────────────────
+// 智能分配报销金额到各安全类别（低风险优先，控制在安全上限80%以内）
+function distributeReimbursement(amount, revenue) {
+  if (amount <= 0 || revenue <= 0) return {};
+  // 优先级：全额扣除且低风险类别排前面
+  const priorities = [
+    'office', 'transport', 'communication', 'travel', 'utilities',
+    'maintenance', 'postage', 'advertising', 'consulting', 'labor',
+    'rent', 'entertainment'
+  ];
+  let remaining = amount;
+  const distribution = {};
+  // 第一轮：每类分配安全上限的 80%
+  for (const key of priorities) {
+    if (remaining <= 0) break;
+    const cat = REIMBURSE_CATEGORIES.find(c => c.key === key);
+    if (!cat) continue;
+    const safeMax = revenue * cat.safePct[1];
+    const alloc = Math.min(safeMax * 0.8, remaining);
+    if (alloc > 0) {
+      distribution[key] = Math.round(alloc * 100) / 100;
+      remaining -= alloc;
+    }
+  }
+  // 第二轮：如果还有剩余，在各类别安全上限内继续分配
+  if (remaining > 0.01) {
+    for (const key of priorities) {
+      if (remaining <= 0) break;
+      const cat = REIMBURSE_CATEGORIES.find(c => c.key === key);
+      if (!cat) continue;
+      const current = distribution[key] || 0;
+      const safeMax = revenue * cat.safePct[1];
+      const canAdd = safeMax - current;
+      const add = Math.min(canAdd, remaining);
+      if (add > 0) {
+        distribution[key] = Math.round((current + add) * 100) / 100;
+        remaining -= add;
+      }
+    }
+  }
+  return distribution;
+}
+
+/**
+ * 生成三层瀑布智能套现方案
+ * 第一层: 免税工资 (N × 5000, 零个税)
+ * 第二层: 报销套现 (≤营收20%, 零个税零社保)
+ * 第三层: 征税工资 (剩余, 等额化最小化个税)
+ * 同时计算纯工资方案作对比，展示节省金额
+ */
+function generateSmartCashoutPlan(enabledEmployees, commission, monthRevenue) {
+  if (enabledEmployees.length === 0 || commission <= 0) return null;
+
+  const N = enabledEmployees.length;
+  const profit = Math.round(commission * PROFIT_RATE * 100) / 100;
+  const taxReserve = Math.round(commission * TAX_RATE * 100) / 100;
+  const cashoutTarget = Math.round(commission * CASHOUT_RATE * 100) / 100;
+
+  // 第一层：免税工资
+  const taxFreeSalary = N * IIT_THRESHOLD; // N × 5000
+
+  // 第二层：报销套现（最多营收的20%）
+  const maxReimburse = Math.round(monthRevenue * 0.20 * 100) / 100;
+  const remainingAfterTier1 = Math.max(0, cashoutTarget - taxFreeSalary);
+  const reimburseAmount = Math.round(Math.min(maxReimburse, remainingAfterTier1) * 100) / 100;
+
+  // 第三层：征税工资
+  const salaryNeeded = Math.max(0, Math.round((cashoutTarget - reimburseAmount) * 100) / 100);
+
+  // 生成混合方案工资
+  const salaryPlan = generateCashoutPlan(enabledEmployees, salaryNeeded);
+  // 生成报销分配
+  const reimbursePlan = distributeReimbursement(reimburseAmount, monthRevenue);
+
+  // 纯工资方案对比
+  const pureSalaryPlan = generateCashoutPlan(enabledEmployees, cashoutTarget);
+  const pureSalaryCost = pureSalaryPlan ? Math.round(pureSalaryPlan.reduce((s, e) => s + e.totalCost, 0) * 100) / 100 : 0;
+  const pureSalaryIIT = pureSalaryPlan ? Math.round(pureSalaryPlan.reduce((s, e) => s + e.iit, 0) * 100) / 100 : 0;
+
+  // 混合方案成本
+  const mixedSalaryCost = salaryPlan ? Math.round(salaryPlan.reduce((s, e) => s + e.totalCost, 0) * 100) / 100 : 0;
+  const mixedSalaryIIT = salaryPlan ? Math.round(salaryPlan.reduce((s, e) => s + e.iit, 0) * 100) / 100 : 0;
+  const mixedTotalCost = Math.round((mixedSalaryCost + reimburseAmount) * 100) / 100;
+  const savedCost = Math.round((pureSalaryCost - mixedTotalCost) * 100) / 100;
+  const savedIIT = Math.round((pureSalaryIIT - mixedSalaryIIT) * 100) / 100;
+
+  return {
+    commission, profit, taxReserve, cashoutTarget,
+    taxFreeSalary, reimburseAmount, salaryNeeded,
+    salaryPlan, reimbursePlan,
+    pureSalaryCost, pureSalaryIIT,
+    mixedSalaryCost, mixedSalaryIIT, mixedTotalCost,
+    savedCost, savedIIT,
+    reimbursePct: monthRevenue > 0 ? Math.round(reimburseAmount / monthRevenue * 1000) / 10 : 0,
+  };
+}
+
 export default function SalaryPlanner() {
   const [employees, setEmployees] = useState(DEFAULT_EMPLOYEES);
   const [monthlyRevenues, setMonthlyRevenues] = useState(Array(12).fill(0).map((_, i) => {
@@ -300,8 +397,8 @@ export default function SalaryPlanner() {
   const [activeReimburseMonth, setActiveReimburseMonth] = useState(0);
 
   // ── 智能套现方案生成器状态 ────────────────────────────
-  const [targetCashout, setTargetCashout] = useState(76000); // 默认8万佣金×95%
   const [planEnabledIds, setPlanEnabledIds] = useState(() => DEFAULT_EMPLOYEES.map(e => e.id));
+  const [activePlanMonth, setActivePlanMonth] = useState(0); // 智能规划月份
 
   // ── 工资计算 ──────────────────────────────────────────
   const salaryDetails = useMemo(() => {
@@ -457,27 +554,24 @@ export default function SalaryPlanner() {
     };
   }, [monthlyRevenues, monthlyNetTotal, monthlyCostTotal, monthlyReimburseTotals, monthlyDeductible]);
 
-  // ── 智能套现方案计算 ──────────────────────────────────
-  const cashoutPlan = useMemo(() => {
+  // ── 智能套现方案计算（基于选中月份的佣金） ──────────────
+  const smartPlan = useMemo(() => {
     const enabledEmps = employees.filter(e => planEnabledIds.includes(e.id));
-    return generateCashoutPlan(enabledEmps, targetCashout);
-  }, [employees, planEnabledIds, targetCashout]);
+    const commission = monthlyRevenues[activePlanMonth] || 0;
+    return generateSmartCashoutPlan(enabledEmps, commission, commission);
+  }, [employees, planEnabledIds, activePlanMonth, monthlyRevenues]);
 
+  // 智能方案的工资汇总
   const planSummary = useMemo(() => {
-    if (!cashoutPlan) return null;
-    const totalGross = cashoutPlan.reduce((s, e) => s + e.gross, 0);
-    const totalIIT = cashoutPlan.reduce((s, e) => s + e.iit, 0);
-    const totalNet = cashoutPlan.reduce((s, e) => s + e.net, 0);
-    const totalEnterprise = cashoutPlan.reduce((s, e) => s + e.enterprise.total, 0);
-    const totalCost = cashoutPlan.reduce((s, e) => s + e.totalCost, 0);
-    const totalSocialPersonal = cashoutPlan.reduce((s, e) => s + e.totalSocial, 0);
+    if (!smartPlan || !smartPlan.salaryPlan) return null;
+    const plan = smartPlan.salaryPlan;
+    const totalGross = plan.reduce((s, e) => s + e.gross, 0);
+    const totalIIT = plan.reduce((s, e) => s + e.iit, 0);
+    const totalNet = plan.reduce((s, e) => s + e.net, 0);
+    const totalEnterprise = plan.reduce((s, e) => s + e.enterprise.total, 0);
+    const totalCost = plan.reduce((s, e) => s + e.totalCost, 0);
+    const totalSocialPersonal = plan.reduce((s, e) => s + e.totalSocial, 0);
     const effectiveRate = totalGross > 0 ? (totalIIT / totalGross * 100) : 0;
-    const costRate = totalNet > 0 ? (totalCost / totalNet * 100) : 0;
-    // 判断方案质量
-    const matchDiff = Math.abs(totalNet - targetCashout);
-    let quality = 'good';
-    if (effectiveRate > 10) quality = 'warning';
-    if (effectiveRate > 20) quality = 'danger';
     return {
       totalGross: Math.round(totalGross * 100) / 100,
       totalIIT: Math.round(totalIIT * 100) / 100,
@@ -486,23 +580,17 @@ export default function SalaryPlanner() {
       totalCost: Math.round(totalCost * 100) / 100,
       totalSocialPersonal: Math.round(totalSocialPersonal * 100) / 100,
       effectiveRate: Math.round(effectiveRate * 100) / 100,
-      costRate: Math.round(costRate * 100) / 100,
-      matchDiff: Math.round(matchDiff * 100) / 100,
-      quality,
-      empCount: cashoutPlan.length,
+      empCount: plan.length,
     };
-  }, [cashoutPlan, targetCashout]);
+  }, [smartPlan]);
 
-  // 建议增加人数的计算：如果当前有效税率 > 3%，计算需要多少人才能降到3%档
+  // 建议增加人数（混合方案下仍有较高税负时）
   const addPersonSuggestion = useMemo(() => {
-    if (!planSummary || planSummary.effectiveRate <= 3) return null;
-    // 3%档上限：每人月度应纳税所得额 ≤ 3000，即每人最多贡献 3000 - 3000*3% = 2910 净收入（超出免税部分）
-    // 免税部分：5000/人
-    // 总套现 = N * (5000 + 2910) = N * 7910
-    // 需要 N ≥ targetCashout / 7910
-    const minPeople = Math.ceil(targetCashout / 7910);
+    if (!smartPlan || !planSummary || planSummary.effectiveRate <= 3) return null;
+    const target = smartPlan.salaryNeeded;
+    if (target <= 0) return null;
+    const minPeople = Math.ceil(target / 7910);
     if (minPeople <= planSummary.empCount) return null;
-    // 计算增加到 minPeople 后的方案
     const virtualEmps = [];
     for (let i = 0; i < minPeople; i++) {
       if (i < employees.length) {
@@ -514,12 +602,12 @@ export default function SalaryPlanner() {
         });
       }
     }
-    const virtualPlan = generateCashoutPlan(virtualEmps, targetCashout);
+    const virtualPlan = generateCashoutPlan(virtualEmps, target);
     if (!virtualPlan) return null;
     const virtualIIT = virtualPlan.reduce((s, e) => s + e.iit, 0);
     const savedIIT = planSummary.totalIIT - virtualIIT;
     return { minPeople, virtualIIT: Math.round(virtualIIT * 100) / 100, savedIIT: Math.round(savedIIT * 100) / 100 };
-  }, [planSummary, targetCashout, employees]);
+  }, [smartPlan, planSummary, employees]);
 
   // ── 操作 ──────────────────────────────────────────────
   const addEmployee = () => {
@@ -554,11 +642,24 @@ export default function SalaryPlanner() {
 
   // 智能方案：一键应用到工资表
   const applyPlanToSalary = () => {
-    if (!cashoutPlan) return;
+    if (!smartPlan || !smartPlan.salaryPlan) return;
     setEmployees(prev => prev.map(emp => {
-      const planItem = cashoutPlan.find(p => p.id === emp.id);
+      const planItem = smartPlan.salaryPlan.find(p => p.id === emp.id);
       if (!planItem) return emp;
       return { ...emp, grossSalary: planItem.gross };
+    }));
+  };
+
+  // 智能方案：一键应用到报销表
+  const applyReimbursePlan = () => {
+    if (!smartPlan || !smartPlan.reimbursePlan) return;
+    setReimburseData(prev => prev.map((m, i) => {
+      if (i !== activePlanMonth) return m;
+      const updated = { ...m };
+      Object.keys(smartPlan.reimbursePlan).forEach(key => {
+        updated[key] = smartPlan.reimbursePlan[key];
+      });
+      return updated;
     }));
   };
 
@@ -588,43 +689,49 @@ export default function SalaryPlanner() {
         </p>
       </div>
 
-      {/* ══ Section 0: 智能套现方案生成器 ══ */}
+      {/* ══ Section 0: 佣金套现智能规划（三层瀑布）══ */}
       <div className="bg-white rounded-xl border-2 border-primary-300 overflow-hidden shadow-sm">
         <div className="px-5 py-3 border-b border-gray-200 bg-gradient-to-r from-primary-50 to-blue-50">
           <h3 className="font-bold text-gray-800 flex items-center gap-2">
             <Target size={18} className="text-primary-600" />
-            智能套现方案生成器
+            佣金套现智能规划
           </h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            输入目标套现金额 → 自动生成最低税费的工资下发方案 · 算法原理：等额化应纳税所得额，利用累进税率凸性最小化总个税
+            选择月份 → 读取佣金 → 自动生成「免税工资 + 报销 + 征税工资」三层瀑布方案，最小化套现成本
           </p>
         </div>
 
-        {/* 输入区 */}
-        <div className="px-5 py-4 border-b border-gray-100">
-          <div className="flex items-center gap-4 flex-wrap">
-            <div className="flex items-center gap-2">
-              <label className="text-sm font-medium text-gray-700">目标套现金额：</label>
-              <input type="number" step="1000" value={targetCashout}
-                onChange={(e) => setTargetCashout(parseFloat(e.target.value) || 0)}
-                className="w-40 px-3 py-2 border-2 border-primary-200 rounded-lg text-lg font-bold text-right text-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500" />
-              <span className="text-gray-500 text-sm">元</span>
-            </div>
-            {/* 快捷填充按钮 */}
-            <div className="flex items-center gap-1.5">
-              <button onClick={() => setTargetCashout(38000)}
-                className="px-2.5 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">4万佣金×95%</button>
-              <button onClick={() => setTargetCashout(57000)}
-                className="px-2.5 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">6万佣金×95%</button>
-              <button onClick={() => setTargetCashout(76000)}
-                className="px-2.5 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">8万佣金×95%</button>
-              <button onClick={() => setTargetCashout(95000)}
-                className="px-2.5 py-1 text-xs bg-gray-100 text-gray-600 rounded hover:bg-gray-200">10万佣金×95%</button>
-            </div>
+        {/* 月份选择 + 佣金展示 */}
+        <div className="px-5 py-3 border-b border-gray-100">
+          <div className="flex items-center gap-2 flex-wrap">
+            {MONTHS.map((label, idx) => (
+              <button key={idx} onClick={() => setActivePlanMonth(idx)}
+                className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                  activePlanMonth === idx
+                    ? 'bg-primary-600 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="mt-2 flex items-center gap-4 flex-wrap text-sm">
+            <span className="text-gray-500">当月佣金：</span>
+            <input type="number" step="1000" value={monthlyRevenues[activePlanMonth] || 0}
+              onChange={(e) => updateRevenue(activePlanMonth, parseFloat(e.target.value) || 0)}
+              className="w-36 px-3 py-1.5 border-2 border-primary-200 rounded-lg text-base font-bold text-right text-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500" />
+            <span className="text-gray-400">元</span>
+            {smartPlan && (
+              <span className="flex items-center gap-3 ml-2">
+                <span className="text-blue-600">利润4%: <strong>{fmtNum(smartPlan.profit)}</strong></span>
+                <span className="text-orange-600">税费1%: <strong>{fmtNum(smartPlan.taxReserve)}</strong></span>
+                <span className="text-purple-600">需套现95%: <strong>{fmtNum(smartPlan.cashoutTarget)}</strong></span>
+              </span>
+            )}
           </div>
 
           {/* 员工选择 */}
-          <div className="mt-3 flex items-center gap-2 flex-wrap">
+          <div className="mt-2 flex items-center gap-2 flex-wrap">
             <span className="text-xs text-gray-500">参与套现员工：</span>
             {employees.map(emp => (
               <button key={emp.id} onClick={() => togglePlanEmp(emp.id)}
@@ -642,180 +749,288 @@ export default function SalaryPlanner() {
           </div>
         </div>
 
-        {/* 方案概览 */}
-        {planSummary && (
-          <div className="px-5 py-3 bg-gray-50 border-b border-gray-100">
-            <div className="grid grid-cols-6 gap-3">
-              <div className="text-center">
-                <p className="text-xs text-gray-500 mb-0.5">目标套现</p>
-                <p className="text-base font-bold text-primary-700">{fmtNum(planSummary.totalNet)}</p>
-              </div>
-              <div className="text-center">
-                <p className="text-xs text-gray-500 mb-0.5">应发工资合计</p>
-                <p className="text-base font-bold text-gray-700">{fmtNum(planSummary.totalGross)}</p>
-              </div>
-              <div className="text-center">
-                <p className="text-xs text-gray-500 mb-0.5">个税合计</p>
-                <p className={`text-base font-bold ${planSummary.totalIIT > 0 ? 'text-orange-600' : 'text-green-600'}`}>
-                  {fmtNum(planSummary.totalIIT)}
-                </p>
-              </div>
-              <div className="text-center">
-                <p className="text-xs text-gray-500 mb-0.5">个人社保合计</p>
-                <p className="text-base font-bold text-gray-600">{fmtNum(planSummary.totalSocialPersonal)}</p>
-              </div>
-              <div className="text-center">
-                <p className="text-xs text-gray-500 mb-0.5">企业社保合计</p>
-                <p className="text-base font-bold text-gray-600">{fmtNum(planSummary.totalEnterprise)}</p>
-              </div>
-              <div className="text-center">
-                <p className="text-xs text-gray-500 mb-0.5">总用工成本</p>
-                <p className="text-base font-bold text-orange-700">{fmtNum(planSummary.totalCost)}</p>
-              </div>
-            </div>
-            {/* 有效税率指示器 */}
-            <div className="mt-3 flex items-center gap-3">
-              <div className="flex-1 flex items-center gap-2">
-                <span className="text-xs text-gray-500">有效个税税率</span>
-                <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden max-w-xs">
-                  <div className={`h-full rounded-full ${planSummary.effectiveRate <= 3 ? 'bg-green-500' : planSummary.effectiveRate <= 10 ? 'bg-yellow-500' : 'bg-red-500'}`}
-                    style={{ width: `${Math.min(100, planSummary.effectiveRate * 5)}%` }} />
+        {smartPlan && smartPlan.salaryPlan && (
+          <>
+            {/* 三层瀑布可视化 */}
+            <div className="px-5 py-4 bg-gradient-to-b from-gray-50 to-white border-b border-gray-100">
+              <div className="grid grid-cols-3 gap-3 mb-3">
+                {/* 第一层：免税工资 */}
+                <div className={`rounded-lg border p-3 ${smartPlan.taxFreeSalary > 0 ? 'border-green-300 bg-green-50' : 'border-gray-200 bg-gray-50 opacity-50'}`}>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <span className="text-xs font-bold text-green-700">第一层 · 免税工资</span>
+                    {smartPlan.taxFreeSalary > 0 && <CheckCircle2 size={12} className="text-green-600" />}
+                  </div>
+                  <p className="text-xl font-bold text-green-700">{fmtNum(smartPlan.taxFreeSalary)}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {planEnabledIds.length}人 × ¥5,000 · 零个税零社保成本
+                  </p>
                 </div>
-                <span className={`text-xs font-bold ${planSummary.effectiveRate <= 3 ? 'text-green-600' : planSummary.effectiveRate <= 10 ? 'text-yellow-600' : 'text-red-600'}`}>
-                  {planSummary.effectiveRate}%
-                </span>
+
+                {/* 第二层：报销套现 */}
+                <div className={`rounded-lg border p-3 ${smartPlan.reimburseAmount > 0 ? 'border-cyan-300 bg-cyan-50' : 'border-gray-200 bg-gray-50 opacity-50'}`}>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <span className="text-xs font-bold text-cyan-700">第二层 · 报销套现</span>
+                    {smartPlan.reimburseAmount > 0 && <Receipt size={12} className="text-cyan-600" />}
+                  </div>
+                  <p className="text-xl font-bold text-cyan-700">{fmtNum(smartPlan.reimburseAmount)}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    占营收 {smartPlan.reimbursePct}% · 零个税零社保成本
+                  </p>
+                </div>
+
+                {/* 第三层：征税工资 */}
+                <div className={`rounded-lg border p-3 ${smartPlan.salaryNeeded > smartPlan.taxFreeSalary ? 'border-orange-300 bg-orange-50' : 'border-gray-200 bg-gray-50 opacity-50'}`}>
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <span className="text-xs font-bold text-orange-700">第三层 · 征税工资</span>
+                    {smartPlan.salaryNeeded > smartPlan.taxFreeSalary && smartPlan.mixedSalaryIIT > 0 && <AlertTriangle size={12} className="text-orange-500" />}
+                  </div>
+                  <p className="text-xl font-bold text-orange-700">{fmtNum(smartPlan.salaryNeeded)}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    个税 {fmtNum(smartPlan.mixedSalaryIIT)} · 等额化分配最小化税率
+                  </p>
+                </div>
               </div>
-              <span className="text-xs text-gray-400">|</span>
-              <span className="text-xs text-gray-500">
-                套现成本率：<span className="font-medium text-gray-700">{planSummary.costRate}%</span>
-                （每套现100元需支出 {planSummary.costRate} 元）
-              </span>
-              <span className="text-xs text-gray-400">|</span>
-              <span className={`text-xs font-medium ${
-                planSummary.quality === 'good' ? 'text-green-600' :
-                planSummary.quality === 'warning' ? 'text-yellow-600' : 'text-red-600'
-              }`}>
-                {planSummary.quality === 'good' ? '✅ 方案优良' :
-                 planSummary.quality === 'warning' ? '⚠️ 税负偏高' : '⛔ 税负过重'}
-              </span>
+
+              {/* 合计 + 对比 */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* 混合方案 */}
+                <div className="rounded-lg border-2 border-primary-300 bg-primary-50/50 p-3">
+                  <p className="text-xs font-bold text-primary-700 mb-2">混合方案（推荐）</p>
+                  <div className="grid grid-cols-3 gap-2 text-xs">
+                    <div>
+                      <p className="text-gray-500">合计套现</p>
+                      <p className="font-bold text-gray-800">{fmtNum(smartPlan.cashoutTarget)}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">总个税</p>
+                      <p className={`font-bold ${smartPlan.mixedSalaryIIT > 0 ? 'text-orange-600' : 'text-green-600'}`}>{fmtNum(smartPlan.mixedSalaryIIT)}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-500">总成本</p>
+                      <p className="font-bold text-orange-700">{fmtNum(smartPlan.mixedTotalCost)}</p>
+                    </div>
+                  </div>
+                </div>
+                {/* 纯工资对比 */}
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-xs font-bold text-gray-500 mb-2">纯工资方案（对比）</p>
+                  <div className="grid grid-cols-3 gap-2 text-xs">
+                    <div>
+                      <p className="text-gray-400">合计套现</p>
+                      <p className="font-medium text-gray-600">{fmtNum(smartPlan.cashoutTarget)}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-400">总个税</p>
+                      <p className="font-medium text-gray-500">{fmtNum(smartPlan.pureSalaryIIT)}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-400">总成本</p>
+                      <p className="font-medium text-gray-500">{fmtNum(smartPlan.pureSalaryCost)}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 节省金额展示 */}
+              {smartPlan.savedCost > 0 && (
+                <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded-lg text-center text-sm">
+                  <span className="text-green-700">
+                    混合方案比纯工资方案 <strong>省成本 {fmt(smartPlan.savedCost)}</strong>
+                    · <strong>省个税 {fmt(smartPlan.savedIIT)}</strong>
+                  </span>
+                </div>
+              )}
+              {smartPlan.savedCost <= 0 && smartPlan.reimburseAmount > 0 && (
+                <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded-lg text-center text-sm text-green-700">
+                  报销套现 {fmt(smartPlan.reimburseAmount)} 已替代等额征税工资，零个税零社保成本
+                </div>
+              )}
             </div>
-          </div>
+
+            {/* 推荐工资方案表 */}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 border-b border-gray-200 text-gray-600">
+                    <th className="px-3 py-3 text-center font-medium w-10">序号</th>
+                    <th className="px-3 py-3 text-left font-medium">姓名</th>
+                    <th className="px-3 py-3 text-right font-medium bg-blue-50/50">推荐应发</th>
+                    <th className="px-3 py-3 text-right font-medium">个人社保</th>
+                    <th className="px-3 py-3 text-right font-medium">应纳税所得</th>
+                    <th className="px-3 py-3 text-right font-medium text-orange-600">个税</th>
+                    <th className="px-3 py-3 text-right font-medium bg-green-50/50">实发(套现)</th>
+                    <th className="px-3 py-3 text-right font-medium">企业社保</th>
+                    <th className="px-3 py-3 text-right font-medium bg-orange-50/50">用工成本</th>
+                    <th className="px-3 py-3 text-center font-medium">税率</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {smartPlan.salaryPlan.map((emp, idx) => {
+                    const empIITRate = emp.gross > 0 ? (emp.iit / emp.gross * 100) : 0;
+                    return (
+                      <tr key={emp.id} className="border-b border-gray-100 hover:bg-primary-50/20">
+                        <td className="px-3 py-2 text-center text-gray-400">{idx + 1}</td>
+                        <td className="px-3 py-2 font-medium text-gray-700">{emp.name}</td>
+                        <td className="px-3 py-2 text-right font-bold text-blue-700 bg-blue-50/30">{fmtNum(emp.gross)}</td>
+                        <td className="px-3 py-2 text-right text-gray-500">{fmtNum(emp.totalSocial)}</td>
+                        <td className="px-3 py-2 text-right text-gray-500">{fmtNum(emp.taxable)}</td>
+                        <td className="px-3 py-2 text-right text-orange-600">{emp.iit > 0 ? fmtNum(emp.iit) : '—'}</td>
+                        <td className="px-3 py-2 text-right font-bold text-green-700 bg-green-50/30">{fmtNum(emp.net)}</td>
+                        <td className="px-3 py-2 text-right text-gray-500">{fmtNum(emp.enterprise.total)}</td>
+                        <td className="px-3 py-2 text-right font-medium text-orange-700 bg-orange-50/30">{fmtNum(emp.totalCost)}</td>
+                        <td className="px-3 py-2 text-center">
+                          <span className={`text-xs font-medium ${
+                            empIITRate <= 0.1 ? 'text-green-600' :
+                            empIITRate <= 3 ? 'text-yellow-600' : 'text-red-600'
+                          }`}>
+                            {empIITRate.toFixed(1)}%
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-gray-100 border-t-2 border-gray-300 font-bold">
+                    <td colSpan="2" className="px-3 py-3 text-center text-gray-700">工资合计</td>
+                    <td className="px-3 py-3 text-right text-blue-700 bg-blue-50/50">{fmtNum(planSummary?.totalGross || 0)}</td>
+                    <td className="px-3 py-3 text-right text-gray-600">{fmtNum(planSummary?.totalSocialPersonal || 0)}</td>
+                    <td className="px-3 py-3 text-right text-gray-600">{fmtNum(smartPlan.salaryPlan.reduce((s, e) => s + e.taxable, 0))}</td>
+                    <td className="px-3 py-3 text-right text-orange-600">{fmtNum(planSummary?.totalIIT || 0)}</td>
+                    <td className="px-3 py-3 text-right text-green-700 bg-green-50/50">{fmtNum(planSummary?.totalNet || 0)}</td>
+                    <td className="px-3 py-3 text-right text-gray-600">{fmtNum(planSummary?.totalEnterprise || 0)}</td>
+                    <td className="px-3 py-3 text-right text-orange-700 bg-orange-50/50">{fmtNum(planSummary?.totalCost || 0)}</td>
+                    <td className="px-3 py-3 text-center text-gray-600">{planSummary?.effectiveRate || 0}%</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+
+            {/* 推荐报销方案表 */}
+            {smartPlan.reimburseAmount > 0 && Object.keys(smartPlan.reimbursePlan).length > 0 && (
+              <div className="border-t border-gray-200">
+                <div className="px-5 py-2 bg-cyan-50/30 border-b border-gray-100">
+                  <p className="text-sm font-bold text-cyan-700 flex items-center gap-1.5">
+                    <Receipt size={14} />
+                    智能推荐报销方案（第二层套现）
+                  </p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    系统已按安全范围自动分配各类别金额 · 点击下方按钮一键填入报销表
+                  </p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-gray-50 border-b border-gray-200 text-gray-600">
+                        <th className="px-3 py-2 text-left font-medium">类别</th>
+                        <th className="px-3 py-2 text-right font-medium bg-cyan-50/50">推荐金额</th>
+                        <th className="px-3 py-2 text-right font-medium">安全范围</th>
+                        <th className="px-3 py-2 text-right font-medium">占营收%</th>
+                        <th className="px-3 py-2 text-left font-medium">防查要点</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {REIMBURSE_CATEGORIES.filter(c => smartPlan.reimbursePlan[c.key] > 0).map((cat) => {
+                        const amount = smartPlan.reimbursePlan[cat.key];
+                        const revenue = smartPlan.commission;
+                        const pct = revenue > 0 ? (amount / revenue * 100).toFixed(2) : '0.00';
+                        const [minPct, maxPct] = cat.safePct;
+                        return (
+                          <tr key={cat.key} className="border-b border-gray-100 hover:bg-cyan-50/20">
+                            <td className="px-3 py-2 font-medium text-gray-700">
+                              <span className="mr-1">{cat.icon}</span>{cat.label}
+                            </td>
+                            <td className="px-3 py-2 text-right font-bold text-cyan-700 bg-cyan-50/30">{fmtNum(amount)}</td>
+                            <td className="px-3 py-2 text-right text-gray-500 text-xs">
+                              {(minPct * 100).toFixed(1)}% ~ {(maxPct * 100).toFixed(1)}%
+                            </td>
+                            <td className="px-3 py-2 text-right text-gray-600 text-xs">{pct}%</td>
+                            <td className="px-3 py-2 text-xs text-gray-400">{cat.auditTip}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr className="bg-gray-100 border-t-2 border-gray-300 font-bold">
+                        <td className="px-3 py-2 text-gray-700">报销合计</td>
+                        <td className="px-3 py-2 text-right text-cyan-700 bg-cyan-50/50">{fmtNum(smartPlan.reimburseAmount)}</td>
+                        <td colSpan="3" className="px-3 py-2 text-xs text-gray-500">
+                          占营收 {smartPlan.reimbursePct}%（安全线20%以内） · 零个税零社保成本
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* 操作按钮 + 智能提示 */}
+            <div className="px-5 py-3 bg-gray-50 border-t border-gray-200 space-y-2">
+              <div className="flex items-center gap-3 flex-wrap">
+                <button onClick={applyPlanToSalary}
+                  className="flex items-center gap-1.5 px-4 py-2 text-sm bg-primary-600 text-white rounded-lg hover:bg-primary-700 font-medium">
+                  <Wand2 size={14} /> 一键应用工资方案
+                </button>
+                {smartPlan.reimburseAmount > 0 && (
+                  <button onClick={applyReimbursePlan}
+                    className="flex items-center gap-1.5 px-4 py-2 text-sm bg-cyan-600 text-white rounded-lg hover:bg-cyan-700 font-medium">
+                    <Receipt size={14} /> 一键应用报销方案
+                  </button>
+                )}
+                <span className="text-xs text-gray-400">将推荐方案填入下方工资表和报销表</span>
+              </div>
+
+              {/* 零个税提示 */}
+              {planSummary && planSummary.totalIIT === 0 && (
+                <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-xs text-green-700">
+                  ✅ <strong>零个税方案！</strong>
+                  佣金 {fmt(smartPlan.commission)} 的95%套现目标 {fmt(smartPlan.cashoutTarget)}
+                  通过「免税工资 + 报销」即可全额覆盖，无需缴纳任何个税。
+                </div>
+              )}
+
+              {/* 税率档位说明 */}
+              {planSummary && planSummary.totalIIT > 0 && smartPlan.salaryPlan.length > 0 && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-700">
+                  <strong>第三层征税工资分配说明：</strong>
+                  每人月度应纳税所得额约 {fmtNum(smartPlan.salaryPlan[0].taxable)}，
+                  {smartPlan.salaryPlan[0].taxable * 12 <= 36000 ? '处于3%税率档（年≤3.6万）' :
+                   smartPlan.salaryPlan[0].taxable * 12 <= 144000 ? '处于10%税率档（年3.6万~14.4万）' :
+                   smartPlan.salaryPlan[0].taxable * 12 <= 300000 ? '处于20%税率档（年14.4万~30万）' :
+                   '处于更高税率档'}
+                  ，已等额化分配（累进税率下数学最优）。
+                </div>
+              )}
+
+              {/* 增加人数建议 */}
+              {addPersonSuggestion && (
+                <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-xs text-yellow-700">
+                  💡 <strong>省钱建议：</strong>
+                  当前 {planSummary.empCount} 人方案第三层个税 {fmt(planSummary.totalIIT)}。
+                  若增加至 <strong>{addPersonSuggestion.minPeople} 人</strong>，
+                  可将每人应纳税所得额降至3%档以内，月度个税降至 {fmt(addPersonSuggestion.virtualIIT)}，
+                  每月节省 <strong className="text-green-700">{fmt(addPersonSuggestion.savedIIT)}</strong>。
+                </div>
+              )}
+
+              {/* 高税负警告 */}
+              {planSummary && planSummary.effectiveRate > 10 && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+                  ⛔ <strong>第三层税负过重！</strong>
+                  有效税率 {planSummary.effectiveRate}%。建议：①增加参与套现人数 ②提高报销比例（当前{smartPlan.reimbursePct}%/20%上限） ③拆分至多月发放。
+                </div>
+              )}
+            </div>
+          </>
         )}
 
-        {/* 推荐工资方案表 */}
-        {cashoutPlan && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-gray-50 border-b border-gray-200 text-gray-600">
-                  <th className="px-3 py-3 text-center font-medium w-10">序号</th>
-                  <th className="px-3 py-3 text-left font-medium">姓名</th>
-                  <th className="px-3 py-3 text-right font-medium bg-blue-50/50">推荐应发</th>
-                  <th className="px-3 py-3 text-right font-medium">个人社保</th>
-                  <th className="px-3 py-3 text-right font-medium">应纳税所得</th>
-                  <th className="px-3 py-3 text-right font-medium text-orange-600">个税</th>
-                  <th className="px-3 py-3 text-right font-medium bg-green-50/50">实发(套现)</th>
-                  <th className="px-3 py-3 text-right font-medium">企业社保</th>
-                  <th className="px-3 py-3 text-right font-medium bg-orange-50/50">用工成本</th>
-                  <th className="px-3 py-3 text-center font-medium">税率</th>
-                </tr>
-              </thead>
-              <tbody>
-                {cashoutPlan.map((emp, idx) => {
-                  const empIITRate = emp.gross > 0 ? (emp.iit / emp.gross * 100) : 0;
-                  return (
-                    <tr key={emp.id} className="border-b border-gray-100 hover:bg-primary-50/20">
-                      <td className="px-3 py-2 text-center text-gray-400">{idx + 1}</td>
-                      <td className="px-3 py-2 font-medium text-gray-700">{emp.name}</td>
-                      <td className="px-3 py-2 text-right font-bold text-blue-700 bg-blue-50/30">{fmtNum(emp.gross)}</td>
-                      <td className="px-3 py-2 text-right text-gray-500">{fmtNum(emp.totalSocial)}</td>
-                      <td className="px-3 py-2 text-right text-gray-500">{fmtNum(emp.taxable)}</td>
-                      <td className="px-3 py-2 text-right text-orange-600">{emp.iit > 0 ? fmtNum(emp.iit) : '—'}</td>
-                      <td className="px-3 py-2 text-right font-bold text-green-700 bg-green-50/30">{fmtNum(emp.net)}</td>
-                      <td className="px-3 py-2 text-right text-gray-500">{fmtNum(emp.enterprise.total)}</td>
-                      <td className="px-3 py-2 text-right font-medium text-orange-700 bg-orange-50/30">{fmtNum(emp.totalCost)}</td>
-                      <td className="px-3 py-2 text-center">
-                        <span className={`text-xs font-medium ${
-                          empIITRate <= 0.1 ? 'text-green-600' :
-                          empIITRate <= 3 ? 'text-yellow-600' : 'text-red-600'
-                        }`}>
-                          {empIITRate.toFixed(1)}%
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr className="bg-gray-100 border-t-2 border-gray-300 font-bold">
-                  <td colSpan="2" className="px-3 py-3 text-center text-gray-700">合计</td>
-                  <td className="px-3 py-3 text-right text-blue-700 bg-blue-50/50">{fmtNum(planSummary.totalGross)}</td>
-                  <td className="px-3 py-3 text-right text-gray-600">{fmtNum(planSummary.totalSocialPersonal)}</td>
-                  <td className="px-3 py-3 text-right text-gray-600">{fmtNum(cashoutPlan.reduce((s, e) => s + e.taxable, 0))}</td>
-                  <td className="px-3 py-3 text-right text-orange-600">{fmtNum(planSummary.totalIIT)}</td>
-                  <td className="px-3 py-3 text-right text-green-700 bg-green-50/50">{fmtNum(planSummary.totalNet)}</td>
-                  <td className="px-3 py-3 text-right text-gray-600">{fmtNum(planSummary.totalEnterprise)}</td>
-                  <td className="px-3 py-3 text-right text-orange-700 bg-orange-50/50">{fmtNum(planSummary.totalCost)}</td>
-                  <td className="px-3 py-3 text-center text-gray-600">{planSummary.effectiveRate}%</td>
-                </tr>
-              </tfoot>
-            </table>
+        {/* 无佣金提示 */}
+        {(!smartPlan || !smartPlan.salaryPlan) && (
+          <div className="px-5 py-12 text-center text-gray-400">
+            <Target size={32} className="mx-auto mb-2 opacity-30" />
+            <p className="text-sm">请在上方选择月份并输入佣金收入，系统将自动生成最优套现方案</p>
           </div>
         )}
-
-        {/* 操作 + 建议 */}
-        <div className="px-5 py-3 bg-gray-50 border-t border-gray-200 space-y-2">
-          <div className="flex items-center gap-3">
-            <button onClick={applyPlanToSalary}
-              className="flex items-center gap-1.5 px-4 py-2 text-sm bg-primary-600 text-white rounded-lg hover:bg-primary-700 font-medium">
-              <Wand2 size={14} /> 一键应用到工资表
-            </button>
-            <span className="text-xs text-gray-400">将推荐应发金额填入上方工资表</span>
-          </div>
-
-          {/* 税率档位说明 */}
-          {planSummary && planSummary.totalIIT > 0 && cashoutPlan.length > 0 && (
-            <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-700">
-              <strong>算法说明：</strong>
-              当前每人月度应纳税所得额约 {fmtNum(cashoutPlan[0].taxable)}，
-              {cashoutPlan[0].taxable * 12 <= 36000 ? '处于3%税率档（年应纳税≤3.6万）' :
-               cashoutPlan[0].taxable * 12 <= 144000 ? '处于10%税率档（年应纳税3.6万~14.4万）' :
-               cashoutPlan[0].taxable * 12 <= 300000 ? '处于20%税率档（年应纳税14.4万~30万）' :
-               '处于更高税率档'}
-              。各员工应纳税所得额已等额化，这是累进税率下的数学最优解。
-            </div>
-          )}
-
-          {/* 免税方案提示 */}
-          {planSummary && planSummary.totalIIT === 0 && (
-            <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-xs text-green-700">
-              ✅ <strong>零个税方案！</strong>
-              目标套现金额 {fmt(targetCashout)} 在 {planSummary.empCount} 人免税额度内
-              （{planSummary.empCount} × ¥5,000 = {fmt(planSummary.empCount * 5000)}），
-              每人实发 ≤ ¥5,000，无需缴纳个税。
-            </div>
-          )}
-
-          {/* 增加人数建议 */}
-          {addPersonSuggestion && (
-            <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-xs text-yellow-700">
-              💡 <strong>省钱建议：</strong>
-              当前 {planSummary.empCount} 人方案月度个税 {fmt(planSummary.totalIIT)}。
-              若增加至 <strong>{addPersonSuggestion.minPeople} 人</strong>，
-              可将每人应纳税所得额降至3%档以内，月度个税降至 {fmt(addPersonSuggestion.virtualIIT)}，
-              每月节省 <strong className="text-green-700">{fmt(addPersonSuggestion.savedIIT)}</strong>。
-            </div>
-          )}
-
-          {/* 高税负警告 */}
-          {planSummary && planSummary.effectiveRate > 10 && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
-              ⛔ <strong>税负过重！</strong>
-              有效税率 {planSummary.effectiveRate}% 意味着每发100元工资要交 {planSummary.effectiveRate} 元税。
-              强烈建议：①增加参与套现的人数 ②搭配报销套现分担 ③考虑拆分至多月发放。
-            </div>
-          )}
-        </div>
       </div>
 
       {/* ══ Section 1: 月度佣金 → 套现规划 ══ */}
