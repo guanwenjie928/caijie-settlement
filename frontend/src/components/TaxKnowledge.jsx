@@ -2,12 +2,13 @@ import { useState, useEffect } from 'react';
 import {
   BookOpen, Calculator, BarChart3, RefreshCw, AlertTriangle,
   CheckCircle2, XCircle, Building2, Percent, Receipt, Coins,
-  TrendingUp, Shield
+  TrendingUp, Shield, Wallet
 } from 'lucide-react';
 import { getTaxKnowledge, simulateTax } from '../api/client';
+import SalaryPlanner from './SalaryPlanner';
 
 /**
- * 财会知识页 — 3个Tab: 知识库 / 税务模拟器 / 额度看板
+ * 财会知识页 — 4个Tab: 知识库 / 税务模拟器 / 额度看板 / 薪资规划
  */
 export default function TaxKnowledge() {
   const [activeTab, setActiveTab] = useState('knowledge');
@@ -47,6 +48,7 @@ export default function TaxKnowledge() {
           { id: 'knowledge', label: '知识库', icon: BookOpen },
           { id: 'simulator', label: '税务模拟器', icon: Calculator },
           { id: 'quota', label: '额度看板', icon: BarChart3 },
+          { id: 'salary', label: '薪资规划', icon: Wallet },
         ].map(tab => {
           const Icon = tab.icon;
           return (
@@ -70,6 +72,7 @@ export default function TaxKnowledge() {
       {activeTab === 'knowledge' && <KnowledgeBase knowledge={knowledge} />}
       {activeTab === 'simulator' && <TaxSimulator />}
       {activeTab === 'quota' && <QuotaDashboard knowledge={knowledge} />}
+      {activeTab === 'salary' && <SalaryPlanner />}
     </div>
   );
 }
