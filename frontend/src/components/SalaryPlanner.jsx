@@ -1,7 +1,8 @@
 import { useState, useMemo } from 'react';
 import {
   Plus, Trash2, AlertTriangle, CheckCircle2, XCircle,
-  TrendingUp, Wallet, Shield, Calculator, ArrowRight
+  TrendingUp, Wallet, Shield, Calculator, ArrowRight,
+  Receipt, ShieldCheck, Eye
 } from 'lucide-react';
 
 /**
@@ -72,6 +73,118 @@ const DEFAULT_EMPLOYEES = [
 
 const MONTHS = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
 
+// ── 报销套现费用类别 ─────────────────────────────────────
+// safePct: 安全范围占月营收的比例 [下限, 上限]
+// deductRule: 税前扣除规则说明
+// auditTip: 防查要点
+const REIMBURSE_CATEGORIES = [
+  {
+    key: 'office', label: '办公费', icon: '📋',
+    safePct: [0.02, 0.05],
+    deductRule: '全额税前扣除，需真实发票',
+    auditTip: '发票品名应与公司经营相关（文具、耗材、打印等），避免大量一次性开票',
+  },
+  {
+    key: 'travel', label: '差旅费', icon: '✈️',
+    safePct: [0.02, 0.08],
+    deductRule: '全额税前扣除，需出差审批+行程单',
+    auditTip: '需有出差事由、目的地、时间，交通+住宿+补助要合理匹配',
+  },
+  {
+    key: 'entertainment', label: '业务招待费', icon: '🍽️',
+    safePct: [0.003, 0.005],
+    deductRule: '按实际发生额60%扣除，且≤营收5‰',
+    auditTip: '最易被查项目！需招待审批单、菜单明细，金额不宜过大',
+  },
+  {
+    key: 'transport', label: '交通费', icon: '🚗',
+    safePct: [0.01, 0.03],
+    deductRule: '全额税前扣除，需票据',
+    auditTip: '滴滴/出租车票为主，避免同一日期多张大额票据',
+  },
+  {
+    key: 'communication', label: '通讯费', icon: '📞',
+    safePct: [0.005, 0.015],
+    deductRule: '全额税前扣除，需发票',
+    auditTip: '以话费充值发票为主，月度金额相对稳定',
+  },
+  {
+    key: 'rent', label: '房租物业', icon: '🏢',
+    safePct: [0.05, 0.15],
+    deductRule: '全额税前扣除，需租赁合同+发票',
+    auditTip: '需有真实租赁合同，发票方与合同出租方一致，金额与合同匹配',
+  },
+  {
+    key: 'utilities', label: '水电费', icon: '💡',
+    safePct: [0.01, 0.03],
+    deductRule: '全额税前扣除，需发票',
+    auditTip: '物业代开或供电局/水务局直接开具，金额随季节波动合理',
+  },
+  {
+    key: 'advertising', label: '广告宣传费', icon: '📢',
+    safePct: [0.03, 0.08],
+    deductRule: '≤营收15%全额扣除，超出部分结转以后年度',
+    auditTip: '文化创意公司常用项，需有合同+投放记录+效果截图',
+  },
+  {
+    key: 'consulting', label: '咨询费', icon: '💡',
+    safePct: [0.02, 0.05],
+    deductRule: '全额税前扣除，需合同+发票',
+    auditTip: '需有咨询合同、咨询报告等成果文件，金额与市场价匹配',
+  },
+  {
+    key: 'labor', label: '劳务费', icon: '👷',
+    safePct: [0.02, 0.06],
+    deductRule: '全额税前扣除，需代扣个税',
+    auditTip: '需劳务合同+劳务费发放签收单，超过800元需代扣20%个税',
+  },
+  {
+    key: 'postage', label: '邮寄快递', icon: '📦',
+    safePct: [0.002, 0.01],
+    deductRule: '全额税前扣除，需发票',
+    auditTip: '快递公司月结发票为主，金额小且稳定',
+  },
+  {
+    key: 'maintenance', label: '维修费', icon: '🔧',
+    safePct: [0.01, 0.03],
+    deductRule: '全额税前扣除，需发票+维修清单',
+    auditTip: '电脑/空调/办公设备维修为主，金额与设备价值匹配',
+  },
+];
+
+// 生成初始月度报销数据（12月 × 类别数，全部0）
+function initReimburseData() {
+  return Array(12).fill(0).map(() => {
+    const m = {};
+    REIMBURSE_CATEGORIES.forEach(c => { m[c.key] = 0; });
+    return m;
+  });
+}
+
+// 评估单个类别的风险等级
+function assessCategoryRisk(amount, revenue, category) {
+  if (amount <= 0) return 'none';
+  const [minPct, maxPct] = category.safePct;
+  const pct = revenue > 0 ? amount / revenue : 0;
+  if (pct <= maxPct * 1.2) return 'safe';       // 安全区（含20%缓冲）
+  if (pct <= maxPct * 2) return 'warning';       // 警告区
+  return 'danger';                                // 高风险
+}
+
+// 计算业务招待费可扣除额
+function calcEntertainmentDeductible(amount, revenue) {
+  // 按实际发生额60%扣除，且不超过营收5‰
+  const sixtyPct = amount * 0.6;
+  const limit = revenue * 0.005;
+  return Math.min(sixtyPct, limit);
+}
+
+// 计算广告费可扣除额
+function calcAdDeductible(amount, annualRevenue) {
+  const limit = annualRevenue * 0.15;
+  return Math.min(amount, limit);
+}
+
 export default function SalaryPlanner() {
   const [employees, setEmployees] = useState(DEFAULT_EMPLOYEES);
   const [monthlyRevenues, setMonthlyRevenues] = useState(Array(12).fill(0).map((_, i) => {
@@ -79,6 +192,10 @@ export default function SalaryPlanner() {
     if (i < 6) return 90000;
     return 0;
   }));
+  // 报销套现数据：12个月 × N个类别
+  const [reimburseData, setReimburseData] = useState(initReimburseData());
+  // 当前查看的月份索引（报销明细）
+  const [activeReimburseMonth, setActiveReimburseMonth] = useState(0);
 
   // ── 工资计算 ──────────────────────────────────────────
   const salaryDetails = useMemo(() => {
@@ -106,22 +223,86 @@ export default function SalaryPlanner() {
     return Math.round(salaryDetails.reduce((s, e) => s + e.totalCost, 0) * 100) / 100;
   }, [salaryDetails]);
 
-  // ── 月度套现规划 ──────────────────────────────────────
+  // ── 报销套现计算 ──────────────────────────────────────
+  // 每月报销总额
+  const monthlyReimburseTotals = useMemo(() => {
+    return reimburseData.map(m => {
+      const total = REIMBURSE_CATEGORIES.reduce((s, c) => s + (m[c.key] || 0), 0);
+      return Math.round(total * 100) / 100;
+    });
+  }, [reimburseData]);
+
+  // 年度营收（用于广告费扣除限额）
+  const annualRevenue = useMemo(() => monthlyRevenues.reduce((s, r) => s + r, 0), [monthlyRevenues]);
+
+  // 报销风险评估（按月×类别）
+  const reimburseRisk = useMemo(() => {
+    return reimburseData.map((monthData, mIdx) => {
+      const revenue = monthlyRevenues[mIdx] || 0;
+      const risks = {};
+      let hasWarning = false;
+      let hasDanger = false;
+      REIMBURSE_CATEGORIES.forEach(c => {
+        const risk = assessCategoryRisk(monthData[c.key] || 0, revenue, c);
+        risks[c.key] = risk;
+        if (risk === 'warning') hasWarning = true;
+        if (risk === 'danger') hasDanger = true;
+      });
+      const totalReimburse = monthlyReimburseTotals[mIdx];
+      // 总报销占比超过营收20%触发警告，超过30%触发危险
+      const totalPct = revenue > 0 ? totalReimburse / revenue : 0;
+      if (totalPct > 0.30) hasDanger = true;
+      else if (totalPct > 0.20) hasWarning = true;
+      return { risks, hasWarning, hasDanger, totalPct };
+    });
+  }, [reimburseData, monthlyRevenues, monthlyReimburseTotals]);
+
+  // 报销可税前扣除额（按月）
+  const monthlyDeductible = useMemo(() => {
+    return reimburseData.map((monthData, mIdx) => {
+      const revenue = monthlyRevenues[mIdx] || 0;
+      let deductible = 0;
+      let nonDeductible = 0;
+      REIMBURSE_CATEGORIES.forEach(c => {
+        const amount = monthData[c.key] || 0;
+        if (amount <= 0) return;
+        if (c.key === 'entertainment') {
+          const ded = calcEntertainmentDeductible(amount, revenue);
+          deductible += ded;
+          nonDeductible += amount - ded;
+        } else if (c.key === 'advertising') {
+          const ded = calcAdDeductible(amount, annualRevenue);
+          deductible += ded;
+          nonDeductible += amount - ded;
+        } else {
+          deductible += amount;
+        }
+      });
+      return {
+        deductible: Math.round(deductible * 100) / 100,
+        nonDeductible: Math.round(nonDeductible * 100) / 100,
+      };
+    });
+  }, [reimburseData, monthlyRevenues, annualRevenue]);
+
+  // ── 月度套现规划（含报销） ────────────────────────────
   const monthlyPlan = useMemo(() => {
     return MONTHS.map((label, idx) => {
       const revenue = monthlyRevenues[idx] || 0;
       const profit = Math.round(revenue * PROFIT_RATE * 100) / 100;
       const tax = Math.round(revenue * TAX_RATE * 100) / 100;
       const cashoutTarget = Math.round(revenue * CASHOUT_RATE * 100) / 100;
-      const actualCashout = monthlyNetTotal;  // 每月固定工资
+      const salaryCashout = monthlyNetTotal;  // 每月固定工资套现
+      const reimburseCashout = monthlyReimburseTotals[idx] || 0;  // 报销套现
+      const actualCashout = Math.round((salaryCashout + reimburseCashout) * 100) / 100;
       const diff = Math.round((cashoutTarget - actualCashout) * 100) / 100;
       const matchStatus = Math.abs(diff) < 100 ? 'matched' : (diff > 0 ? 'deficit' : 'surplus');
 
-      return { idx, label, revenue, profit, tax, cashoutTarget, actualCashout, diff, matchStatus };
+      return { idx, label, revenue, profit, tax, cashoutTarget, salaryCashout, reimburseCashout, actualCashout, diff, matchStatus };
     });
-  }, [monthlyRevenues, monthlyNetTotal]);
+  }, [monthlyRevenues, monthlyNetTotal, monthlyReimburseTotals]);
 
-  // ── 季度汇总 ──────────────────────────────────────────
+  // ── 季度汇总（含报销） ────────────────────────────────
   const quarters = useMemo(() => {
     return [0, 1, 2, 3].map(qi => {
       const months = [qi * 3, qi * 3 + 1, qi * 3 + 2];
@@ -130,36 +311,45 @@ export default function SalaryPlanner() {
       const taxReserve = Math.round(revenue * TAX_RATE * 100) / 100;
       const cashoutTarget = Math.round(revenue * CASHOUT_RATE * 100) / 100;
       const actualSalary = monthlyNetTotal * 3;
+      const actualReimburse = months.reduce((s, m) => s + (monthlyReimburseTotals[m] || 0), 0);
+      const actualTotal = Math.round((actualSalary + actualReimburse) * 100) / 100;
       const threshold = 300000;
       const usedPct = revenue > 0 ? Math.round(revenue / threshold * 100 * 10) / 10 : 0;
       const remaining = Math.round((threshold - revenue) * 100) / 100;
       const isExempt = revenue <= threshold;
       const vatStatus = usedPct < 80 ? 'green' : usedPct < 100 ? 'yellow' : 'red';
       const vat = isExempt ? 0 : Math.round(revenue * 0.01 * 100) / 100;
-      const cashoutDiff = Math.round((cashoutTarget - actualSalary) * 100) / 100;
+      const cashoutDiff = Math.round((cashoutTarget - actualTotal) * 100) / 100;
 
       return {
         index: qi, label: `Q${qi + 1}`, months,
         revenue: Math.round(revenue * 100) / 100,
-        profit, taxReserve, cashoutTarget, actualSalary, cashoutDiff,
+        profit, taxReserve, cashoutTarget, actualSalary, actualReimburse, actualTotal, cashoutDiff,
         threshold, usedPct, remaining, isExempt, vatStatus, vat,
       };
     });
-  }, [monthlyRevenues, monthlyNetTotal]);
+  }, [monthlyRevenues, monthlyNetTotal, monthlyReimburseTotals]);
 
-  // ── 年度汇总 ──────────────────────────────────────────
+  // ── 年度汇总（含报销） ────────────────────────────────
   const annualSummary = useMemo(() => {
     const totalRevenue = monthlyRevenues.reduce((s, r) => s + r, 0);
+    const totalReimburse = monthlyReimburseTotals.reduce((s, r) => s + r, 0);
+    const totalDeductible = monthlyDeductible.reduce((s, d) => s + d.deductible, 0);
+    const totalNonDeductible = monthlyDeductible.reduce((s, d) => s + d.nonDeductible, 0);
     return {
       revenue: Math.round(totalRevenue * 100) / 100,
       profit: Math.round(totalRevenue * PROFIT_RATE * 100) / 100,
       taxReserve: Math.round(totalRevenue * TAX_RATE * 100) / 100,
       cashoutTarget: Math.round(totalRevenue * CASHOUT_RATE * 100) / 100,
       actualSalary: Math.round(monthlyNetTotal * 12 * 100) / 100,
+      actualReimburse: Math.round(totalReimburse * 100) / 100,
+      actualTotal: Math.round((monthlyNetTotal * 12 + totalReimburse) * 100) / 100,
       actualCost: Math.round(monthlyCostTotal * 12 * 100) / 100,
-      cashoutDiff: Math.round((totalRevenue * CASHOUT_RATE - monthlyNetTotal * 12) * 100) / 100,
+      cashoutDiff: Math.round((totalRevenue * CASHOUT_RATE - monthlyNetTotal * 12 - totalReimburse) * 100) / 100,
+      totalDeductible: Math.round(totalDeductible * 100) / 100,
+      totalNonDeductible: Math.round(totalNonDeductible * 100) / 100,
     };
-  }, [monthlyRevenues, monthlyNetTotal, monthlyCostTotal]);
+  }, [monthlyRevenues, monthlyNetTotal, monthlyCostTotal, monthlyReimburseTotals, monthlyDeductible]);
 
   // ── 操作 ──────────────────────────────────────────────
   const addEmployee = () => {
@@ -176,6 +366,13 @@ export default function SalaryPlanner() {
     const next = [...monthlyRevenues];
     next[idx] = value;
     setMonthlyRevenues(next);
+  };
+  const updateReimburse = (monthIdx, categoryKey, value) => {
+    const next = reimburseData.map((m, i) => {
+      if (i !== monthIdx) return m;
+      return { ...m, [categoryKey]: value };
+    });
+    setReimburseData(next);
   };
 
   const fmt = (amt) => `¥ ${(amt || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -199,8 +396,8 @@ export default function SalaryPlanner() {
       <div className="bg-gradient-to-r from-blue-50 to-primary-50 rounded-xl border border-blue-200 p-4">
         <p className="text-sm text-blue-700">
           <strong>套现规划逻辑：</strong>
-          每月佣金进账后，4%是你的利润，1%预留税费，<strong>95%需要通过发工资套现出去</strong>。
-          下方表格帮你精准匹配「需套现金额」与「实际工资实发」，确保不多发不少发。
+          每月佣金进账后，4%是你的利润，1%预留税费，<strong>95%需要通过发工资 + 报销套现出去</strong>。
+          下方表格帮你精准匹配「需套现金额」与「实际套现（工资+报销）」，确保不多发不少发。
         </p>
       </div>
 
@@ -208,7 +405,7 @@ export default function SalaryPlanner() {
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <h3 className="font-bold text-gray-800 px-5 py-3 border-b border-gray-200 bg-gray-50 flex items-center gap-2">
           <TrendingUp size={18} className="text-primary-600" />
-          月度佣金 → 套现规划
+          月度佣金 → 套现规划（工资 + 报销）
         </h3>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -220,6 +417,8 @@ export default function SalaryPlanner() {
                 <th className="px-3 py-3 text-right font-medium text-orange-600">税费预留 1%</th>
                 <th className="px-3 py-3 text-right font-medium text-purple-600 bg-purple-50/30">需套现 95%</th>
                 <th className="px-3 py-3 text-right font-medium">工资实发</th>
+                <th className="px-3 py-3 text-right font-medium text-cyan-600 bg-cyan-50/30">报销套现</th>
+                <th className="px-3 py-3 text-right font-medium">合计套现</th>
                 <th className="px-3 py-3 text-right font-medium">套现差额</th>
                 <th className="px-3 py-3 text-center font-medium">状态</th>
               </tr>
@@ -240,7 +439,9 @@ export default function SalaryPlanner() {
                     <td className="px-3 py-2 text-right text-blue-600 font-medium">{fmtNum(m.profit)}</td>
                     <td className="px-3 py-2 text-right text-orange-600">{fmtNum(m.tax)}</td>
                     <td className="px-3 py-2 text-right text-purple-700 font-bold bg-purple-50/30">{fmtNum(m.cashoutTarget)}</td>
-                    <td className="px-3 py-2 text-right text-gray-700">{fmtNum(m.actualCashout)}</td>
+                    <td className="px-3 py-2 text-right text-gray-700">{fmtNum(m.salaryCashout)}</td>
+                    <td className="px-3 py-2 text-right text-cyan-700 font-medium bg-cyan-50/30">{fmtNum(m.reimburseCashout)}</td>
+                    <td className="px-3 py-2 text-right text-gray-800 font-medium">{fmtNum(m.actualCashout)}</td>
                     <td className={`px-3 py-2 text-right font-bold ${m.diff > 0 ? 'text-red-600' : m.diff < 0 ? 'text-yellow-600' : 'text-green-600'}`}>
                       {m.diff > 0 ? '+' : ''}{fmtNum(m.diff)}
                     </td>
@@ -262,6 +463,8 @@ export default function SalaryPlanner() {
                 <td className="px-3 py-3 text-right text-orange-600">{fmt(annualSummary.taxReserve)}</td>
                 <td className="px-3 py-3 text-right text-purple-700 bg-purple-50/50">{fmt(annualSummary.cashoutTarget)}</td>
                 <td className="px-3 py-3 text-right text-gray-700">{fmt(annualSummary.actualSalary)}</td>
+                <td className="px-3 py-3 text-right text-cyan-700 bg-cyan-50/50">{fmt(annualSummary.actualReimburse)}</td>
+                <td className="px-3 py-3 text-right text-gray-800">{fmt(annualSummary.actualTotal)}</td>
                 <td className={`px-3 py-3 text-right ${annualSummary.cashoutDiff > 0 ? 'text-red-600' : annualSummary.cashoutDiff < 0 ? 'text-yellow-600' : 'text-green-600'}`}>
                   {annualSummary.cashoutDiff > 0 ? '+' : ''}{fmt(annualSummary.cashoutDiff)}
                 </td>
@@ -271,9 +474,9 @@ export default function SalaryPlanner() {
           </table>
         </div>
         <div className="px-5 py-3 bg-gray-50 border-t border-gray-200 text-xs text-gray-500">
-          <strong>套现差额 = 需套现95% - 工资实发合计</strong> ·
+          <strong>套现差额 = 需套现95% - (工资实发 + 报销套现)</strong> ·
           差额 {'>'} 0 = 套现不足（钱没发出去，留在公司账上）·
-          差额 {'<'} 0 = 超额套现（发的工资比进账多）·
+          差额 {'<'} 0 = 超额套现（发的比进账多）·
           差额 ≈ 0 = 精准匹配
         </div>
       </div>
@@ -379,6 +582,191 @@ export default function SalaryPlanner() {
         </div>
       </div>
 
+      {/* ══ Section 2.5: 报销套现规划（防查机制）══ */}
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="px-5 py-3 border-b border-gray-200 bg-gray-50">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                <Receipt size={18} className="text-cyan-600" />
+                报销套现规划（防查机制）
+              </h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                通过报销发票将公司资金合法转出 · 每月报销总额建议控制在营收 20% 以内
+              </p>
+            </div>
+            {/* 月份选择器 */}
+            <div className="flex items-center gap-1">
+              {MONTHS.map((label, idx) => (
+                <button key={idx} onClick={() => setActiveReimburseMonth(idx)}
+                  className={`px-2.5 py-1 text-xs rounded transition-colors ${
+                    activeReimburseMonth === idx
+                      ? 'bg-cyan-600 text-white'
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* 当前月营收展示 */}
+        <div className="px-5 py-2 bg-cyan-50/30 border-b border-gray-100 flex items-center gap-4 text-xs">
+          <span className="text-gray-500">
+            {MONTHS[activeReimburseMonth]} 佣金收入：
+            <span className="font-bold text-gray-700 ml-1">{fmt(monthlyRevenues[activeReimburseMonth] || 0)}</span>
+          </span>
+          <span className="text-gray-500">
+            建议报销安全上限（20%）：
+            <span className="font-bold text-cyan-700 ml-1">{fmt((monthlyRevenues[activeReimburseMonth] || 0) * 0.20)}</span>
+          </span>
+          <span className="text-gray-500">
+            当前报销合计：
+            <span className={`font-bold ml-1 ${
+              (monthlyReimburseTotals[activeReimburseMonth] || 0) > (monthlyRevenues[activeReimburseMonth] || 0) * 0.20
+                ? 'text-red-600' : 'text-green-600'
+            }`}>
+              {fmt(monthlyReimburseTotals[activeReimburseMonth] || 0)}
+            </span>
+          </span>
+        </div>
+
+        {/* 报销类别明细表 */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200 text-gray-600">
+                <th className="px-3 py-3 text-left font-medium">类别</th>
+                <th className="px-3 py-3 text-right font-medium">安全范围（占营收%）</th>
+                <th className="px-3 py-3 text-right font-medium">建议金额区间</th>
+                <th className="px-3 py-3 text-right font-medium">本月录入</th>
+                <th className="px-3 py-3 text-right font-medium">占营收%</th>
+                <th className="px-3 py-3 text-center font-medium">风险</th>
+                <th className="px-3 py-3 text-left font-medium">税前扣除规则</th>
+                <th className="px-3 py-3 text-left font-medium">防查要点</th>
+              </tr>
+            </thead>
+            <tbody>
+              {REIMBURSE_CATEGORIES.map((cat) => {
+                const amount = reimburseData[activeReimburseMonth]?.[cat.key] || 0;
+                const revenue = monthlyRevenues[activeReimburseMonth] || 0;
+                const pct = revenue > 0 ? (amount / revenue * 100).toFixed(2) : '0.00';
+                const risk = reimburseRisk[activeReimburseMonth]?.risks[cat.key] || 'none';
+                const [minPct, maxPct] = cat.safePct;
+                const safeMin = Math.round(revenue * minPct * 100) / 100;
+                const safeMax = Math.round(revenue * maxPct * 100) / 100;
+
+                const riskStyle = {
+                  safe:    { bg: 'bg-green-50',  text: 'text-green-700',  label: '安全',   icon: CheckCircle2 },
+                  warning: { bg: 'bg-yellow-50', text: 'text-yellow-700', label: '注意',   icon: AlertTriangle },
+                  danger:  { bg: 'bg-red-50',    text: 'text-red-700',    label: '高风险', icon: XCircle },
+                  none:    { bg: 'bg-gray-50',   text: 'text-gray-400',   label: '—',      icon: null },
+                };
+                const rs = riskStyle[risk];
+                const RIcon = rs.icon;
+
+                return (
+                  <tr key={cat.key} className="border-b border-gray-100 hover:bg-gray-50/30">
+                    <td className="px-3 py-2 font-medium text-gray-700">
+                      <span className="mr-1">{cat.icon}</span>{cat.label}
+                    </td>
+                    <td className="px-3 py-2 text-right text-gray-500 text-xs">
+                      {(minPct * 100).toFixed(1)}% ~ {(maxPct * 100).toFixed(1)}%
+                    </td>
+                    <td className="px-3 py-2 text-right text-gray-500 text-xs">
+                      {revenue > 0 ? `${fmtNum(safeMin)} ~ ${fmtNum(safeMax)}` : '—'}
+                    </td>
+                    <td className="px-3 py-2">
+                      <input type="number" step="100" value={amount}
+                        onChange={(e) => updateReimburse(activeReimburseMonth, cat.key, parseFloat(e.target.value) || 0)}
+                        className={`w-28 px-2 py-1 border rounded text-sm text-right focus:outline-none focus:ring-1 focus:ring-cyan-500 ${
+                          risk === 'danger' ? 'border-red-300 bg-red-50/30' :
+                          risk === 'warning' ? 'border-yellow-300 bg-yellow-50/30' :
+                          'border-gray-200'
+                        }`} />
+                    </td>
+                    <td className="px-3 py-2 text-right text-gray-600 text-xs">{pct}%</td>
+                    <td className="px-3 py-2 text-center">
+                      {RIcon && (
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs ${rs.bg} ${rs.text}`}>
+                          <RIcon size={12} />
+                          {rs.label}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-xs text-gray-500">{cat.deductRule}</td>
+                    <td className="px-3 py-2 text-xs text-gray-400">{cat.auditTip}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr className="bg-gray-100 border-t-2 border-gray-300 font-bold">
+                <td className="px-3 py-3 text-gray-700" colSpan="3">本月报销合计</td>
+                <td className="px-3 py-3 text-right text-cyan-700">{fmtNum(monthlyReimburseTotals[activeReimburseMonth] || 0)}</td>
+                <td className="px-3 py-3 text-right text-gray-600">
+                  {((monthlyReimburseTotals[activeReimburseMonth] || 0) / Math.max(1, monthlyRevenues[activeReimburseMonth] || 0) * 100).toFixed(1)}%
+                </td>
+                <td className="px-3 py-3 text-center">
+                  {reimburseRisk[activeReimburseMonth]?.hasDanger ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-red-50 text-red-700">
+                      <XCircle size={12} /> 高风险
+                    </span>
+                  ) : reimburseRisk[activeReimburseMonth]?.hasWarning ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-yellow-50 text-yellow-700">
+                      <AlertTriangle size={12} /> 注意
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-green-50 text-green-700">
+                      <CheckCircle2 size={12} /> 安全
+                    </span>
+                  )}
+                </td>
+                <td className="px-3 py-3 text-xs text-gray-500" colSpan="2">
+                  可税前扣除：{fmtNum(monthlyDeductible[activeReimburseMonth]?.deductible || 0)} ·
+                  不可扣除：{fmtNum(monthlyDeductible[activeReimburseMonth]?.nonDeductible || 0)}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        {/* 防查机制提示 */}
+        <div className="px-5 py-3 bg-gray-50 border-t border-gray-200">
+          <div className="flex items-start gap-2 mb-2">
+            <ShieldCheck size={16} className="text-cyan-600 mt-0.5 flex-shrink-0" />
+            <p className="text-xs font-medium text-gray-700">防查机制 — 六大红线不可碰</p>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-xs text-gray-500">
+            <div className="flex items-start gap-1.5">
+              <span className="text-red-400 mt-0.5">①</span>
+              <span><strong>发票真实性</strong>：所有发票必须可在国家税务总局查验真伪，拒绝假票</span>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <span className="text-red-400 mt-0.5">②</span>
+              <span><strong>业务真实性</strong>：报销事项须与公司经营相关，有合同/审批/交付物佐证</span>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <span className="text-red-400 mt-0.5">③</span>
+              <span><strong>金额合理性</strong>：单张发票金额不宜过大，避免整数（如 ¥10,000.00）</span>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <span className="text-red-400 mt-0.5">④</span>
+              <span><strong>时间分散性</strong>：避免月末集中报销，各月金额波动不宜过大</span>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <span className="text-red-400 mt-0.5">⑤</span>
+              <span><strong>类别多样性</strong>：不要过度依赖单一类别，各类别占比合理</span>
+            </div>
+            <div className="flex items-start gap-1.5">
+              <span className="text-red-400 mt-0.5">⑥</span>
+              <span><strong>供应商分散</strong>：避免同一供应商频繁开票，尤其是关联方</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* ══ Section 3: 季度增值税免征 + 套现监控 ══ */}
       <div className="space-y-3">
         <h3 className="font-bold text-gray-800 flex items-center gap-2">
@@ -433,6 +821,10 @@ export default function SalaryPlanner() {
                     <span className="text-gray-500">工资实发</span>
                     <span className="text-gray-700">{fmt(q.actualSalary)}</span>
                   </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">报销套现</span>
+                    <span className="text-cyan-700">{fmt(q.actualReimburse)}</span>
+                  </div>
                   <div className="flex justify-between font-bold border-t border-gray-200/50 pt-1">
                     <span className="text-gray-600">套现差额</span>
                     <span className={q.cashoutDiff > 0 ? 'text-red-600' : q.cashoutDiff < 0 ? 'text-yellow-600' : 'text-green-600'}>
@@ -482,8 +874,22 @@ export default function SalaryPlanner() {
             <p className="text-lg font-bold text-gray-200">{fmt(annualSummary.actualSalary)}</p>
           </div>
           <div>
+            <p className="text-xs text-gray-400 mb-1">年度报销套现</p>
+            <p className="text-lg font-bold text-cyan-300">{fmt(annualSummary.actualReimburse)}</p>
+          </div>
+          <div>
             <p className="text-xs text-gray-400 mb-1">年度用工成本（含企业社保）</p>
             <p className="text-lg font-bold text-gray-200">{fmt(annualSummary.actualCost)}</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-4 pt-3 mt-3 border-t border-gray-700">
+          <div>
+            <p className="text-xs text-gray-400 mb-1">年度合计套现（工资+报销）</p>
+            <p className="text-lg font-bold text-white">{fmt(annualSummary.actualTotal)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-400 mb-1">报销可税前扣除</p>
+            <p className="text-sm font-bold text-green-300">{fmt(annualSummary.totalDeductible)}</p>
           </div>
           <div>
             <p className="text-xs text-gray-400 mb-1">年度套现差额</p>
@@ -503,19 +909,19 @@ export default function SalaryPlanner() {
         <div className="space-y-2 text-sm">
           {annualSummary.cashoutDiff > 0 && (
             <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700">
-              ⛔ 年度套现不足 {fmt(annualSummary.cashoutDiff)}，有部分钱未通过工资发出。
-              建议：提高部分员工工资或增加人数，使月度实发 ≈ 月度佣金×95%。
+              ⛔ 年度套现不足 {fmt(annualSummary.cashoutDiff)}，有部分钱未通过工资+报销发出。
+              建议：提高部分员工工资、增加报销品类，使月度（工资+报销）≈ 月度佣金×95%。
             </div>
           )}
           {annualSummary.cashoutDiff < 0 && (
             <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-700">
-              ⚠️ 年度超额套现 {fmt(Math.abs(annualSummary.cashoutDiff))}，发的工资比佣金进账还多。
-              建议：减少员工工资或人数，或增加佣金收入。
+              ⚠️ 年度超额套现 {fmt(Math.abs(annualSummary.cashoutDiff))}，工资+报销比佣金进账还多。
+              建议：减少员工工资/报销金额，或增加佣金收入。
             </div>
           )}
           {Math.abs(annualSummary.cashoutDiff) < 100 && annualSummary.revenue > 0 && (
             <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700">
-              ✅ 套现精准匹配！工资实发与95%佣金基本一致。
+              ✅ 套现精准匹配！工资实发+报销与95%佣金基本一致。
             </div>
           )}
           {quarters.filter(q => q.vatStatus === 'red').length > 0 && (
@@ -529,6 +935,23 @@ export default function SalaryPlanner() {
               ⚠️ 有 {quarters.filter(q => q.vatStatus === 'yellow').length} 个季度接近30万免征线，控制接单量。
             </div>
           )}
+          {reimburseRisk.some(r => r.hasDanger) && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700">
+              ⛔ 有 {reimburseRisk.filter(r => r.hasDanger).length} 个月份报销存在高风险！
+              某些类别报销占比超出安全范围2倍以上，极易触发税务稽查。请立即调整报销结构。
+            </div>
+          )}
+          {reimburseRisk.some(r => r.hasWarning) && !reimburseRisk.some(r => r.hasDanger) && (
+            <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-700">
+              ⚠️ 有 {reimburseRisk.filter(r => r.hasWarning).length} 个月份报销接近上限，注意控制各类别报销比例。
+            </div>
+          )}
+          <div className="p-3 bg-cyan-50 border border-cyan-200 rounded-lg text-cyan-700">
+            💡 报销套现搭配策略：当工资套现不足以覆盖95%佣金时，用报销补足差额。
+            优先使用办公费、差旅费、交通费等低风险类别；
+            业务招待费扣除限制最严（60%且≤营收5‰），谨慎使用；
+            报销总额建议不超过月营收的 20%。
+          </div>
           <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-700">
             💡 当前每月工资实发 {fmt(monthlyNetTotal)}，对应每月佣金应为 {fmt(monthlyNetTotal / CASHOUT_RATE)} 才能精准匹配。
             季度佣金应控制在 {fmt(100000)} 以内（月均≤10万）以保持增值税免征。
