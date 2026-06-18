@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
-  Users, RefreshCw, ChevronDown, ChevronUp, TrendingUp, TrendingDown,
-  CheckCircle2, Clock, Calendar
+  Users, RefreshCw, ChevronDown, ChevronUp,
+  CheckCircle2, Clock, Calendar, TrendingUp
 } from 'lucide-react';
 import { getPersonStats } from '../api/client';
 
 /**
- * 人员统计页 — 按人名维度展示金额统计、已结清/未结清、时间分布
+ * 人员统计页 — 按人名维度展示金额统计、盈利、已结清/未结清、时间分布
  */
 export default function PersonStats() {
   const [data, setData] = useState([]);
@@ -60,7 +60,7 @@ export default function PersonStats() {
           <Users className="text-gray-600" size={24} />
           <div>
             <h2 className="text-2xl font-bold text-gray-800">人员统计</h2>
-            <p className="text-sm text-gray-500 mt-0.5">按人名维度查看结算统计</p>
+            <p className="text-sm text-gray-500 mt-0.5">按人名维度查看佣金、盈利、结算统计</p>
           </div>
         </div>
         <button
@@ -107,14 +107,22 @@ export default function PersonStats() {
         </div>
       </div>
 
-      {/* 汇总卡片 */}
-      <div className="grid grid-cols-3 gap-4 mb-4">
+      {/* 汇总卡片 — 5个 */}
+      <div className="grid grid-cols-5 gap-4 mb-4">
         <div className="bg-white rounded-lg border border-gray-200 p-4">
           <p className="text-xs text-gray-500 mb-1">原始金额总计</p>
           <p className="text-lg font-bold text-gray-800">¥ {formatAmount(grandTotal.original)}</p>
         </div>
-        <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 mb-1">已结清金额</p>
+        <div className="bg-white rounded-lg border border-blue-200 p-4 bg-blue-50/30">
+          <p className="text-xs text-blue-500 mb-1">盈利总计 (4%)</p>
+          <p className="text-lg font-bold text-blue-700">¥ {formatAmount(grandTotal.profit)}</p>
+        </div>
+        <div className="bg-white rounded-lg border border-orange-200 p-4 bg-orange-50/30">
+          <p className="text-xs text-orange-500 mb-1">税费预留总计 (1%)</p>
+          <p className="text-lg font-bold text-orange-700">¥ {formatAmount(grandTotal.tax)}</p>
+        </div>
+        <div className="bg-white rounded-lg border border-green-200 p-4 bg-green-50/30">
+          <p className="text-xs text-green-500 mb-1">已结清金额</p>
           <p className="text-lg font-bold text-green-600">¥ {formatAmount(grandTotal.paid)}</p>
         </div>
         <div className="bg-white rounded-lg border border-gray-200 p-4">
@@ -161,10 +169,18 @@ export default function PersonStats() {
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-6">
+                    <div className="flex items-center gap-5">
                       <div className="text-right">
                         <p className="text-xs text-gray-500">原始金额</p>
                         <p className="font-bold text-gray-800">¥ {formatAmount(person.total_original)}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs text-blue-500">盈利 4%</p>
+                        <p className="font-bold text-blue-700">¥ {formatAmount(person.total_profit)}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs text-orange-500">税费 1%</p>
+                        <p className="font-bold text-orange-700">¥ {formatAmount(person.total_tax)}</p>
                       </div>
                       <div className="text-right">
                         <p className="text-xs text-gray-500">结算金额</p>
@@ -204,9 +220,9 @@ export default function PersonStats() {
                           </th>
                           <th className="px-4 py-2 text-right font-medium">条数</th>
                           <th className="px-4 py-2 text-right font-medium">原始金额</th>
-                          <th className="px-4 py-2 text-right font-medium">盈利</th>
-                          <th className="px-4 py-2 text-right font-medium">税费</th>
-                          <th className="px-4 py-2 text-right font-medium">结算金额</th>
+                          <th className="px-4 py-2 text-right font-medium text-blue-600">盈利 4%</th>
+                          <th className="px-4 py-2 text-right font-medium text-orange-600">税费 1%</th>
+                          <th className="px-4 py-2 text-right font-medium">结算金额 95%</th>
                           <th className="px-4 py-2 text-right font-medium">已结清</th>
                           <th className="px-4 py-2 text-right font-medium">未结清</th>
                         </tr>
@@ -217,7 +233,7 @@ export default function PersonStats() {
                             <td className="px-4 py-2 text-gray-700 font-medium">{period.period}</td>
                             <td className="px-4 py-2 text-right text-gray-600">{period.count}</td>
                             <td className="px-4 py-2 text-right text-gray-700">¥ {formatAmount(period.original)}</td>
-                            <td className="px-4 py-2 text-right text-blue-600">¥ {formatAmount(period.profit)}</td>
+                            <td className="px-4 py-2 text-right text-blue-600 font-medium">¥ {formatAmount(period.profit)}</td>
                             <td className="px-4 py-2 text-right text-orange-600">¥ {formatAmount(period.tax)}</td>
                             <td className="px-4 py-2 text-right text-green-600 font-medium">¥ {formatAmount(period.settlement)}</td>
                             <td className="px-4 py-2 text-right text-green-700">¥ {formatAmount(period.paid)}</td>
