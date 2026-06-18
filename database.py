@@ -1,12 +1,11 @@
 """
 数据库管理模块
 ===============
-负责 SQLite 数据库的初始化、连接管理和基础 CRUD 操作。
-使用软删除机制，删除的记录可通过 is_deleted 字段恢复。
+SQLite 数据库初始化、连接管理和 CRUD。
+结算逻辑: 盈利(profit_rate) + 税费(tax_rate) + 结算给他人(剩余)
 """
 
 import sqlite3
-import json
 from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
@@ -15,12 +14,11 @@ DB_PATH = Path(__file__).parent / "data.db"
 
 
 def get_now_iso() -> str:
-    """返回当前时间的 ISO 格式字符串"""
     return datetime.now().isoformat()
 
 
 def init_db():
-    """初始化数据库，创建所有表和默认配置"""
+    """初始化数据库，创建表和默认配置"""
     with get_connection() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS settlements (
@@ -29,7 +27,10 @@ def init_db():
                 company_name        TEXT NOT NULL DEFAULT '',
                 tax_number          TEXT NOT NULL DEFAULT '',
                 original_amount     REAL NOT NULL DEFAULT 0,
-                settlement_rate     REAL NOT NULL DEFAULT 0.05,
+                profit_rate         REAL NOT NULL DEFAULT 0.04,
+                tax_rate            REAL NOT NULL DEFAULT 0.01,
+                profit_amount       REAL NOT NULL DEFAULT 0,
+                tax_amount          REAL NOT NULL DEFAULT 0,
                 settlement_amount   REAL NOT NULL DEFAULT 0,
                 entry_time          TEXT NOT NULL,
                 status              TEXT NOT NULL DEFAULT 'unpaid',
@@ -42,6 +43,7 @@ def init_db():
             );
 
             CREATE INDEX IF NOT EXISTS idx_settlements_status ON settlements(status);
+            CREATE INDEX IF NOT EXISTS idx_settlements_person ON settlements(person_name);
             CREATE INDEX IF NOT EXISTS idx_settlements_company ON settlements(company_name);
             CREATE INDEX IF NOT EXISTS idx_settlements_is_deleted ON settlements(is_deleted);
 
@@ -50,15 +52,39 @@ def init_db():
                 value   TEXT NOT NULL
             );
 
-            INSERT OR IGNORE INTO settings (key, value) VALUES ('settlement_rate', '0.05');
+            INSERT OR IGNORE INTO settings (key, value) VALUES ('profit_rate', '0.04');
+            INSERT OR IGNORE INTO settings (key, value) VALUES ('tax_rate', '0.01');
             INSERT OR IGNORE INTO settings (key, value) VALUES ('app_name', '财会结算管理系统');
         """)
+
+        # 迁移旧数据：如果存在 settlement_rate 列，转换为新结构
+        try:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(settlements)").fetchall()]
+            if "settlement_rate" in cols and "profit_rate" not in cols:
+                conn.executescript("""
+                    ALTER TABLE settlements ADD COLUMN profit_rate REAL DEFAULT 0.04;
+                    ALTER TABLE settlements ADD COLUMN tax_rate REAL DEFAULT 0.01;
+                    ALTER TABLE settlements ADD COLUMN profit_amount REAL DEFAULT 0;
+                    ALTER TABLE settlements ADD COLUMN tax_amount REAL DEFAULT 0;
+                """)
+                # 旧数据: settlement_rate=0.05 → profit_rate=0.04, tax_rate=0.01
+                conn.execute("UPDATE settlements SET profit_rate = 0.04, tax_rate = 0.01 WHERE profit_rate IS NULL OR profit_rate = 0")
+                conn.execute("""
+                    UPDATE settlements SET
+                        profit_amount = original_amount * 0.04,
+                        tax_amount = original_amount * 0.01,
+                        settlement_amount = original_amount * 0.95
+                    WHERE is_deleted = 0
+                """)
+                logger.info("数据库迁移完成: settlement_rate → profit_rate + tax_rate")
+        except Exception:
+            pass  # 新数据库，无需迁移
+
         conn.commit()
 
 
 @contextmanager
 def get_connection():
-    """获取数据库连接的上下文管理器"""
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -74,14 +100,12 @@ def get_connection():
 
 
 def get_setting(key: str, default: str = "") -> str:
-    """获取单个配置项"""
     with get_connection() as conn:
         row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         return row["value"] if row else default
 
 
 def set_setting(key: str, value: str):
-    """设置配置项"""
     with get_connection() as conn:
         conn.execute(
             "INSERT INTO settings (key, value) VALUES (?, ?) "
@@ -90,27 +114,40 @@ def set_setting(key: str, value: str):
         )
 
 
-def get_settlement_rate() -> float:
-    """获取当前结算比例"""
-    return float(get_setting("settlement_rate", "0.05"))
+def get_profit_rate() -> float:
+    return float(get_setting("profit_rate", "0.04"))
 
 
-def calc_settlement_amount(original_amount: float, rate: float) -> float:
+def get_tax_rate() -> float:
+    return float(get_setting("tax_rate", "0.01"))
+
+
+def calc_amounts(original_amount: float, profit_rate: float, tax_rate: float) -> dict:
     """
-    计算结算金额，存储保留4位小数，展示时四舍五入到2位。
+    计算盈利、税费、结算金额。
+    settlement = original × (1 - profit_rate - tax_rate)
     """
-    return round(original_amount * rate, 4)
+    profit = round(original_amount * profit_rate, 4)
+    tax = round(original_amount * tax_rate, 4)
+    settlement = round(original_amount * (1 - profit_rate - tax_rate), 4)
+    return {
+        "profit_amount": profit,
+        "tax_amount": tax,
+        "settlement_amount": settlement,
+    }
 
 
 def record_to_dict(row: sqlite3.Row) -> dict:
-    """将数据库行转换为字典"""
     return {
         "id": row["id"],
         "person_name": row["person_name"],
         "company_name": row["company_name"],
         "tax_number": row["tax_number"],
         "original_amount": row["original_amount"],
-        "settlement_rate": row["settlement_rate"],
+        "profit_rate": row["profit_rate"],
+        "tax_rate": row["tax_rate"],
+        "profit_amount": round(row["profit_amount"], 2),
+        "tax_amount": round(row["tax_amount"], 2),
         "settlement_amount": round(row["settlement_amount"], 2),
         "entry_time": row["entry_time"],
         "status": row["status"],

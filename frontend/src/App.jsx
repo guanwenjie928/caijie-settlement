@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { FileText, PlusCircle, Settings as SettingsIcon, Trash2, Download } from 'lucide-react';
+import { FileText, PlusCircle, Settings as SettingsIcon, Trash2, Download, Users, BookOpen } from 'lucide-react';
 import SettlementList from './components/SettlementList';
 import NewRecord from './components/NewRecord';
 import SettingsPage from './components/SettingsPage';
 import DeletedRecords from './components/DeletedRecords';
+import PersonStats from './components/PersonStats';
+import TaxKnowledge from './components/TaxKnowledge';
 
 /**
  * 主应用组件 — 侧边栏导航 + 内容区
@@ -14,6 +16,8 @@ function App() {
   const navItems = [
     { id: 'list', label: '结算列表', icon: FileText },
     { id: 'new', label: '新增票据', icon: PlusCircle },
+    { id: 'stats', label: '人员统计', icon: Users },
+    { id: 'tax', label: '财会知识', icon: BookOpen },
     { id: 'settings', label: '系统设置', icon: SettingsIcon },
     { id: 'deleted', label: '已删除记录', icon: Trash2 },
   ];
@@ -60,6 +64,8 @@ function App() {
       <main className="flex-1 overflow-auto">
         {activePage === 'list' && <SettlementList />}
         {activePage === 'new' && <NewRecord />}
+        {activePage === 'stats' && <PersonStats />}
+        {activePage === 'tax' && <TaxKnowledge />}
         {activePage === 'settings' && <SettingsPage />}
         {activePage === 'deleted' && <DeletedRecords />}
       </main>

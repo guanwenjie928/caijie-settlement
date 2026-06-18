@@ -101,3 +101,22 @@ export async function updateSettings(data) {
   const res = await api.put('/settings', data);
   return res.data;
 }
+
+// ── 人员统计 ────────────────────────────────────────────────
+
+export async function getPersonStats(params = {}) {
+  const res = await api.get('/stats/by-person', { params });
+  return res.data;
+}
+
+// ── 税务模拟 ────────────────────────────────────────────────
+
+export async function getTaxKnowledge() {
+  const res = await api.get('/tax/knowledge');
+  return res.data;
+}
+
+export async function simulateTax(data) {
+  const res = await api.post('/tax/simulate', data);
+  return res.data;
+}

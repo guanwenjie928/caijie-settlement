@@ -3,10 +3,11 @@ import { Settings as SettingsIcon, Save, RefreshCw, Check, AlertTriangle } from 
 import { getSettings, updateSettings } from '../api/client';
 
 /**
- * 系统设置页 — 结算比例配置 + 重算选项
+ * 系统设置页 — 盈利比例 + 税费比例配置 + 重算选项
  */
 export default function SettingsPage() {
-  const [rate, setRate] = useState(0.05);
+  const [profitRate, setProfitRate] = useState(0.04);
+  const [taxRate, setTaxRate] = useState(0.01);
   const [recalcUnpaid, setRecalcUnpaid] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -21,7 +22,8 @@ export default function SettingsPage() {
     try {
       const res = await getSettings();
       if (res.success) {
-        setRate(res.data.settlement_rate);
+        setProfitRate(res.data.profit_rate);
+        setTaxRate(res.data.tax_rate);
       }
     } catch (err) {
       setError('获取配置失败');
@@ -31,8 +33,16 @@ export default function SettingsPage() {
   };
 
   const handleSave = async () => {
-    if (rate < 0 || rate > 1) {
-      setError('结算比例必须在 0~1 之间（如 0.05 表示 5%）');
+    if (profitRate < 0 || profitRate > 1) {
+      setError('盈利比例必须在 0~1 之间（如 0.04 表示 4%）');
+      return;
+    }
+    if (taxRate < 0 || taxRate > 1) {
+      setError('税费比例必须在 0~1 之间（如 0.01 表示 1%）');
+      return;
+    }
+    if (profitRate + taxRate >= 1) {
+      setError('盈利比例 + 税费比例不能超过 100%，否则结算金额为负');
       return;
     }
 
@@ -41,7 +51,8 @@ export default function SettingsPage() {
 
     try {
       const res = await updateSettings({
-        settlement_rate: rate,
+        profit_rate: profitRate,
+        tax_rate: taxRate,
         recalc_unpaid: recalcUnpaid,
       });
 
@@ -64,6 +75,8 @@ export default function SettingsPage() {
     );
   }
 
+  const settlementRate = 1 - profitRate - taxRate;
+
   return (
     <div className="p-6 max-w-2xl mx-auto">
       <div className="flex items-center gap-2 mb-6">
@@ -72,9 +85,9 @@ export default function SettingsPage() {
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-6">
-        {/* 结算比例 */}
+        {/* 盈利比例 */}
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-2">结算比例</label>
+          <label className="block text-sm font-medium text-gray-700 mb-2">盈利比例</label>
           <div className="flex items-center gap-3">
             <div className="relative">
               <input
@@ -82,18 +95,61 @@ export default function SettingsPage() {
                 step="0.001"
                 min="0"
                 max="1"
-                value={rate}
-                onChange={(e) => setRate(parseFloat(e.target.value) || 0)}
+                value={profitRate}
+                onChange={(e) => setProfitRate(parseFloat(e.target.value) || 0)}
                 className="w-32 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
               />
             </div>
             <span className="text-sm text-gray-500">
-              = {(rate * 100).toFixed(1)}%
+              = {(profitRate * 100).toFixed(1)}%
             </span>
           </div>
           <p className="text-xs text-gray-400 mt-1">
-            结算金额 = 原始金额 × 结算比例。如 0.05 表示按5%结算。
+            公司留存盈利，如 0.04 表示按4%收取。
           </p>
+        </div>
+
+        {/* 税费比例 */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">税费预留比例</label>
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <input
+                type="number"
+                step="0.001"
+                min="0"
+                max="1"
+                value={taxRate}
+                onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)}
+                className="w-32 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+              />
+            </div>
+            <span className="text-sm text-gray-500">
+              = {(taxRate * 100).toFixed(1)}%
+            </span>
+          </div>
+          <p className="text-xs text-gray-400 mt-1">
+            预留税费（实际税负可能高于或低于此值，可在"财会知识"页模拟），如 0.01 表示按1%预留。
+          </p>
+        </div>
+
+        {/* 结算比例展示（只读） */}
+        <div className="p-4 bg-gray-50 rounded-lg">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-gray-600">结算比例（自动计算）</span>
+            <span className="font-bold text-green-600">{(settlementRate * 100).toFixed(1)}%</span>
+          </div>
+          <div className="mt-2 flex h-6 rounded overflow-hidden">
+            <div className="bg-blue-400 flex items-center justify-center text-xs text-white" style={{ width: `${profitRate * 100}%` }}>
+              {profitRate > 0.02 ? `盈利${(profitRate * 100).toFixed(0)}%` : ''}
+            </div>
+            <div className="bg-orange-400 flex items-center justify-center text-xs text-white" style={{ width: `${taxRate * 100}%` }}>
+              {taxRate > 0.02 ? `税${(taxRate * 100).toFixed(0)}%` : ''}
+            </div>
+            <div className="bg-green-400 flex items-center justify-center text-xs text-white" style={{ width: `${settlementRate * 100}%` }}>
+              结算{(settlementRate * 100).toFixed(0)}%
+            </div>
+          </div>
         </div>
 
         {/* 重算选项 */}
@@ -111,8 +167,8 @@ export default function SettingsPage() {
                 修改比例后重算所有未结清记录
               </label>
               <p className="text-xs text-gray-500 mt-1">
-                勾选后，保存时将自动重新计算所有"尚未结清"状态记录的结算金额。
-                <br />已结清的记录不受影响（保留原有结算金额）。
+                勾选后，保存时将自动重新计算所有"尚未结清"状态记录的盈利、税费和结算金额。
+                <br />已结清的记录不受影响（保留原有金额）。
               </p>
             </div>
           </div>
@@ -128,8 +184,18 @@ export default function SettingsPage() {
         <div className="p-4 bg-primary-50 rounded-lg border border-primary-100">
           <p className="text-xs text-primary-600 font-medium mb-2">示例计算</p>
           <div className="text-sm text-gray-600 space-y-1">
-            <div>原始金额 ¥10,000.00 → 结算金额 <span className="font-bold text-green-600">¥{(10000 * rate).toFixed(2)}</span></div>
-            <div>原始金额 ¥50,000.00 → 结算金额 <span className="font-bold text-green-600">¥{(50000 * rate).toFixed(2)}</span></div>
+            <div className="flex gap-4">
+              <span>原始金额 ¥10,000.00</span>
+              <span className="text-blue-600">盈利 ¥{(10000 * profitRate).toFixed(2)}</span>
+              <span className="text-orange-600">税费 ¥{(10000 * taxRate).toFixed(2)}</span>
+              <span className="text-green-600 font-bold">结算 ¥{(10000 * settlementRate).toFixed(2)}</span>
+            </div>
+            <div className="flex gap-4">
+              <span>原始金额 ¥50,000.00</span>
+              <span className="text-blue-600">盈利 ¥{(50000 * profitRate).toFixed(2)}</span>
+              <span className="text-orange-600">税费 ¥{(50000 * taxRate).toFixed(2)}</span>
+              <span className="text-green-600 font-bold">结算 ¥{(50000 * settlementRate).toFixed(2)}</span>
+            </div>
           </div>
         </div>
 

@@ -6,6 +6,7 @@ import { uploadAndRecognize, createRecord, checkDuplicate, getSettings } from '.
 
 /**
  * 新增票据页 — 上传 → OCR识别 → 预览编辑（金额高亮+税号校验+重复警告）→ 入库
+ * 结算逻辑: 盈利(profit_rate) + 税费(tax_rate) + 结算给他人(剩余)
  */
 export default function NewRecord() {
   const fileInputRef = useRef(null);
@@ -31,11 +32,15 @@ export default function NewRecord() {
   // 税号校验（18位统一社会信用代码）
   const taxNumberValid = (form.tax_number || '').length === 18 && /^[A-Z0-9]{18}$/.test(form.tax_number || '');
 
-  // 结算金额计算
-  const [settlementRate, setSettlementRate] = useState(0.05);
-  const settlementAmount = form.original_amount
-    ? (parseFloat(form.original_amount) * settlementRate).toFixed(2)
-    : '0.00';
+  // 盈利比例 & 税费比例
+  const [profitRate, setProfitRate] = useState(0.04);
+  const [taxRate, setTaxRate] = useState(0.01);
+
+  // 金额计算
+  const originalAmount = form.original_amount ? parseFloat(form.original_amount) : 0;
+  const profitAmount = (originalAmount * profitRate).toFixed(2);
+  const taxAmount = (originalAmount * taxRate).toFixed(2);
+  const settlementAmount = (originalAmount * (1 - profitRate - taxRate)).toFixed(2);
 
   // ── 文件上传处理 ────────────────────────────────────────
 
@@ -60,10 +65,11 @@ export default function NewRecord() {
     setRecognizing(true);
 
     try {
-      // 获取当前结算比例
+      // 获取当前盈利比例和税费比例
       const settingsRes = await getSettings();
       if (settingsRes.success) {
-        setSettlementRate(settingsRes.data.settlement_rate);
+        setProfitRate(settingsRes.data.profit_rate);
+        setTaxRate(settingsRes.data.tax_rate);
       }
 
       // 上传并识别
@@ -315,12 +321,25 @@ export default function NewRecord() {
               </div>
             </div>
 
-            {/* 结算金额（只读，自动计算） */}
-            <div className="grid grid-cols-3 items-center gap-4">
-              <label className="text-sm text-gray-600 text-right">结算金额</label>
-              <div className="col-span-2 px-3 py-2 bg-green-50 border border-green-200 rounded-lg">
-                <span className="text-green-700 font-bold">¥ {settlementAmount}</span>
-                <span className="text-xs text-green-500 ml-2">（原始金额 × {(settlementRate * 100).toFixed(1)}%）</span>
+            {/* 金额分解（自动计算，只读） */}
+            <div className="grid grid-cols-3 gap-4">
+              <label className="text-sm text-gray-600 text-right pt-2">金额分解</label>
+              <div className="col-span-2 grid grid-cols-3 gap-3">
+                {/* 盈利 */}
+                <div className="px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-center">
+                  <p className="text-xs text-blue-500 mb-0.5">盈利 ({(profitRate * 100).toFixed(1)}%)</p>
+                  <p className="text-blue-700 font-bold text-sm">¥ {profitAmount}</p>
+                </div>
+                {/* 税费 */}
+                <div className="px-3 py-2 bg-orange-50 border border-orange-200 rounded-lg text-center">
+                  <p className="text-xs text-orange-500 mb-0.5">税费 ({(taxRate * 100).toFixed(1)}%)</p>
+                  <p className="text-orange-700 font-bold text-sm">¥ {taxAmount}</p>
+                </div>
+                {/* 结算金额 */}
+                <div className="px-3 py-2 bg-green-50 border border-green-200 rounded-lg text-center">
+                  <p className="text-xs text-green-500 mb-0.5">结算 ({((1 - profitRate - taxRate) * 100).toFixed(1)}%)</p>
+                  <p className="text-green-700 font-bold text-sm">¥ {settlementAmount}</p>
+                </div>
               </div>
             </div>
 

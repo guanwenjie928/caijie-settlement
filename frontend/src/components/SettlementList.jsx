@@ -9,11 +9,12 @@ import {
 
 /**
  * 结算列表页 — 表格展示 + 筛选 + 行内编辑 + 状态切换 + 底部统计
+ * 展示: 原始金额、盈利(4%)、税费(1%)、结算金额(95%)
  */
 export default function SettlementList() {
   const [records, setRecords] = useState([]);
   const [total, setTotal] = useState(0);
-  const [summary, setSummary] = useState({ total_original: 0, total_settlement: 0, count: 0 });
+  const [summary, setSummary] = useState({ total_original: 0, total_profit: 0, total_tax: 0, total_settlement: 0, count: 0 });
   const [loading, setLoading] = useState(false);
 
   // 筛选条件
@@ -141,6 +142,11 @@ export default function SettlementList() {
     });
   };
 
+  // 编辑时的金额计算
+  const editProfit = (editForm.original_amount || 0) * (records.find(r => r.id === editingId)?.profit_rate || 0.04);
+  const editTax = (editForm.original_amount || 0) * (records.find(r => r.id === editingId)?.tax_rate || 0.01);
+  const editSettlement = (editForm.original_amount || 0) * (1 - (records.find(r => r.id === editingId)?.profit_rate || 0.04) - (records.find(r => r.id === editingId)?.tax_rate || 0.01));
+
   return (
     <div className="p-6">
       {/* 页头 */}
@@ -221,18 +227,22 @@ export default function SettlementList() {
       </div>
 
       {/* 统计卡片 */}
-      <div className="grid grid-cols-3 gap-4 mb-4">
+      <div className="grid grid-cols-4 gap-4 mb-4">
         <div className="bg-white rounded-lg border border-gray-200 p-4">
           <p className="text-xs text-gray-500 mb-1">原始金额合计</p>
           <p className="text-lg font-bold text-gray-800">¥ {formatAmount(summary.total_original)}</p>
         </div>
         <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 mb-1">结算金额合计</p>
-          <p className="text-lg font-bold text-green-600">¥ {formatAmount(summary.total_settlement)}</p>
+          <p className="text-xs text-gray-500 mb-1">盈利合计 (4%)</p>
+          <p className="text-lg font-bold text-blue-600">¥ {formatAmount(summary.total_profit)}</p>
         </div>
         <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 mb-1">当前页记录数</p>
-          <p className="text-lg font-bold text-primary-600">{summary.count} 条</p>
+          <p className="text-xs text-gray-500 mb-1">税费合计 (1%)</p>
+          <p className="text-lg font-bold text-orange-600">¥ {formatAmount(summary.total_tax)}</p>
+        </div>
+        <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <p className="text-xs text-gray-500 mb-1">结算金额合计 (95%)</p>
+          <p className="text-lg font-bold text-green-600">¥ {formatAmount(summary.total_settlement)}</p>
         </div>
       </div>
 
@@ -256,6 +266,8 @@ export default function SettlementList() {
                 <th className="px-3 py-3 text-left font-medium">公司名</th>
                 <th className="px-3 py-3 text-left font-medium">税号</th>
                 <th className="px-3 py-3 text-right font-medium">原始金额</th>
+                <th className="px-3 py-3 text-right font-medium">盈利</th>
+                <th className="px-3 py-3 text-right font-medium">税费</th>
                 <th className="px-3 py-3 text-right font-medium">结算金额</th>
                 <th className="px-3 py-3 text-left font-medium">录入时间</th>
                 <th className="px-3 py-3 text-center font-medium">状态</th>
@@ -264,7 +276,7 @@ export default function SettlementList() {
             </thead>
             <tbody>
               {records.map((record) => (
-                <tr key={record.id} className="border-b border-gray-100">
+                <tr key={record.id} className="border-b border-gray-100 hover:bg-gray-50/50">
                   {/* 编辑模式 */}
                   {editingId === record.id ? (
                     <>
@@ -288,8 +300,14 @@ export default function SettlementList() {
                           onChange={(e) => setEditForm({ ...editForm, original_amount: parseFloat(e.target.value) || 0 })}
                           className="w-24 px-2 py-1 border border-primary-300 rounded text-sm text-right" />
                       </td>
+                      <td className="px-3 py-2 text-right text-blue-600 font-medium">
+                        ¥ {formatAmount(editProfit)}
+                      </td>
+                      <td className="px-3 py-2 text-right text-orange-600 font-medium">
+                        ¥ {formatAmount(editTax)}
+                      </td>
                       <td className="px-3 py-2 text-right text-green-600 font-medium">
-                        ¥ {formatAmount((editForm.original_amount || 0) * (record.settlement_rate || 0.05))}
+                        ¥ {formatAmount(editSettlement)}
                       </td>
                       <td className="px-3 py-2">
                         <input type="datetime-local" value={editForm.entry_time?.slice(0, 16) || ''}
@@ -321,6 +339,8 @@ export default function SettlementList() {
                       <td className="px-3 py-3 text-gray-700">{record.company_name || '-'}</td>
                       <td className="px-3 py-3 text-gray-500 font-mono text-xs">{record.tax_number || '-'}</td>
                       <td className="px-3 py-3 text-right text-gray-700 font-medium">¥ {formatAmount(record.original_amount)}</td>
+                      <td className="px-3 py-3 text-right text-blue-600">¥ {formatAmount(record.profit_amount)}</td>
+                      <td className="px-3 py-3 text-right text-orange-600">¥ {formatAmount(record.tax_amount)}</td>
                       <td className="px-3 py-3 text-right text-green-600 font-medium">¥ {formatAmount(record.settlement_amount)}</td>
                       <td className="px-3 py-3 text-gray-500 text-xs">{formatTime(record.entry_time)}</td>
                       <td className="px-3 py-3 text-center">
