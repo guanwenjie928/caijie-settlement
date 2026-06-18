@@ -1,28 +1,22 @@
 import { useState, useMemo } from 'react';
 import {
-  Plus, Trash2, RefreshCw, AlertTriangle, CheckCircle2,
+  Plus, Trash2, AlertTriangle, CheckCircle2,
   TrendingUp, Wallet, Shield, Calculator
 } from 'lucide-react';
 
 /**
- * 薪资规划器 — 按标准工资表格式展示，实时监控增值税季度30万免征线。
+ * 薪资规划器 — 按真实工资表格式展示，实时监控增值税季度30万免征线。
  *
- * 核心逻辑:
- * 1. 用户输入每月佣金收入 + 员工薪资信息
- * 2. 自动计算社保公积金（个人+企业）、个税、实发工资
- * 3. 季度佣金累计 vs 30万免征线 → 绿/黄/红预警
- * 4. 反推"本月还能接多少佣金不触发增值税"
+ * 数据来源: 2026年05月工资表（深圳市此刻的文化创意有限公司）
+ * 员工: 黄嘉雯、余红英、张子雯、巫原齿、许燕要
  *
- * 社保比例参考（深圳）:
- *   个人: 养老8% + 医疗2% + 失业0.3% + 公积金7% ≈ 17.3% (按工资基数)
- *   企业: 养老15% + 医疗5.2% + 失业0.7% + 工伤0.2% + 公积金7% ≈ 28.1% (按工资基数)
- *   注: 实际比例可能因户籍/政策微调，此处取常用估算值
+ * 社保比例（深圳）:
+ *   个人: 养老8% + 医疗2% + 失业0.3% + 公积金7%
+ *   企业: 养老15% + 医疗5.2% + 失业0.7% + 工伤0.2% + 公积金7%
+ *   注: 企业部分按个人缴费基数反推（养老÷0.08×0.15 等）
  */
 
-// ── 社保公积金比例（可配置）──────────────────────────────
-const SOCIAL_PERSONAL_RATE = 0.173;  // 个人部分 ~17.3%
-const SOCIAL_ENTERPRISE_RATE = 0.281; // 企业部分 ~28.1%
-const IIT_THRESHOLD = 5000;           // 个税起征点（月）
+const IIT_THRESHOLD = 5000; // 个税起征点（月）
 
 // ── 个税七级累进（年累计预扣预缴）────────────────────────
 const IIT_BRACKETS = [
@@ -36,16 +30,16 @@ const IIT_BRACKETS = [
 ];
 
 /**
- * 计算月个税（简化：按月均摊年累计）
+ * 计算月个税
+ * @param {number} gross - 工资总额
+ * @param {number} totalSocialPersonal - 个人社保合计
+ * @param {number} specialDeduction - 专项附加扣除
  */
-function calcMonthlyIIT(monthlySalary, specialDeduction = 0) {
-  const socialPersonal = monthlySalary * SOCIAL_PERSONAL_RATE;
-  const monthlyTaxable = Math.max(0, monthlySalary - IIT_THRESHOLD - specialDeduction - socialPersonal);
-  if (monthlyTaxable <= 0) return { tax: 0, taxable: 0, socialPersonal };
+function calcIIT(gross, totalSocialPersonal, specialDeduction = 0) {
+  const monthlyTaxable = Math.max(0, gross - IIT_THRESHOLD - specialDeduction - totalSocialPersonal);
+  if (monthlyTaxable <= 0) return { tax: 0, taxable: 0 };
 
-  // 年累计应纳税所得额
   const annualTaxable = monthlyTaxable * 12;
-  // 找对应档位
   let annualTax = 0;
   for (const bracket of IIT_BRACKETS) {
     if (annualTaxable <= bracket.limit) {
@@ -57,72 +51,106 @@ function calcMonthlyIIT(monthlySalary, specialDeduction = 0) {
   return {
     tax: Math.round(annualTax / 12 * 100) / 100,
     taxable: Math.round(monthlyTaxable * 100) / 100,
-    socialPersonal: Math.round(socialPersonal * 100) / 100,
   };
 }
 
-// ── 默认员工数据 ─────────────────────────────────────────
+/**
+ * 根据个人社保反推企业社保（按深圳比例）
+ * 养老: 个人8% → 企业15%，企业 = 个人 ÷ 0.08 × 0.15 = 个人 × 1.875
+ * 医疗: 个人2% → 企业5.2%，企业 = 个人 ÷ 0.02 × 0.052 = 个人 × 2.6
+ * 失业: 个人0.3% → 企业0.7%，企业 = 个人 ÷ 0.003 × 0.007 ≈ 个人 × 2.333
+ * 工伤: 企业0.2%（个人不缴），按缴费基数估算 = 养老基数 × 0.002
+ * 公积金: 个人7% → 企业7%，企业 = 个人（同比例同基数）
+ */
+function calcEnterpriseSocial(pensionP, medicalP, unemploymentP, housingP) {
+  const pensionBase = pensionP > 0 ? pensionP / 0.08 : 0;
+  const medicalBase = medicalP > 0 ? medicalP / 0.02 : 0;
+  const unemploymentBase = unemploymentP > 0 ? unemploymentP / 0.003 : 0;
+
+  const pensionE = Math.round(pensionBase * 0.15 * 100) / 100;
+  const medicalE = Math.round(medicalBase * 0.052 * 100) / 100;
+  const unemploymentE = Math.round(unemploymentBase * 0.007 * 100) / 100;
+  const workInjuryE = Math.round(pensionBase * 0.002 * 100) / 100; // 工伤按养老基数
+  const housingE = housingP; // 公积金企业=个人（同基数同比例）
+
+  return {
+    pension: pensionE,
+    medical: medicalE,
+    unemployment: unemploymentE,
+    workInjury: workInjuryE,
+    housing: housingE,
+    total: Math.round((pensionE + medicalE + unemploymentE + workInjuryE + housingE) * 100) / 100,
+  };
+}
+
+// ── 真实员工数据（来自2026年5月工资表）────────────────────
 const DEFAULT_EMPLOYEES = [
-  { id: 1, name: '员工1', baseSalary: 6000, allowance: 0, specialDeduction: 0 },
-  { id: 2, name: '员工2', baseSalary: 6000, allowance: 0, specialDeduction: 0 },
-  { id: 3, name: '员工3', baseSalary: 5000, allowance: 0, specialDeduction: 0 },
+  { id: 1, name: '黄嘉雯', grossSalary: 4400.00, pensionP: 0, medicalP: 0, unemploymentP: 0, housingP: 0, specialDeduction: 0 },
+  { id: 2, name: '余红英', grossSalary: 5026.54, pensionP: 480.00, medicalP: 134.54, unemploymentP: 12.00, housingP: 0, specialDeduction: 0 },
+  { id: 3, name: '张子雯', grossSalary: 4400.00, pensionP: 0, medicalP: 0, unemploymentP: 0, housingP: 0, specialDeduction: 0 },
+  { id: 4, name: '巫原齿', grossSalary: 4926.17, pensionP: 382.08, medicalP: 134.54, unemploymentP: 9.55, housingP: 0, specialDeduction: 0 },
+  { id: 5, name: '许燕要', grossSalary: 4926.17, pensionP: 382.08, medicalP: 134.54, unemploymentP: 9.55, housingP: 0, specialDeduction: 0 },
 ];
 
-// ── 月份定义 ─────────────────────────────────────────────
 const MONTHS = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
 
 export default function SalaryPlanner() {
-  // 员工列表
   const [employees, setEmployees] = useState(DEFAULT_EMPLOYEES);
-  // 每月佣金收入
   const [monthlyRevenues, setMonthlyRevenues] = useState(Array(12).fill(0).map((_, i) => {
-    if (i < 3) return 80000;  // Q1 示例
-    if (i < 6) return 90000;  // Q2 示例
+    if (i < 3) return 80000;
+    if (i < 6) return 90000;
     return 0;
   }));
-  // 当前选中季度
-  const [activeQuarter, setActiveQuarter] = useState(0); // 0=Q1, 1=Q2, 2=Q3, 3=Q4
 
   // ── 计算每月工资详情 ──────────────────────────────────
   const monthlySalaryDetails = useMemo(() => {
     return employees.map(emp => {
-      const gross = emp.baseSalary + emp.allowance;
-      const { tax, taxable, socialPersonal } = calcMonthlyIIT(emp.baseSalary, emp.specialDeduction);
-      const housingPersonal = 0;  // 已包含在 SOCIAL_PERSONAL_RATE 中
-      const totalDeduction = socialPersonal + tax;
-      const netPay = gross - totalDeduction;
-      const socialEnterprise = emp.baseSalary * SOCIAL_ENTERPRISE_RATE;
-      const totalCost = gross + socialEnterprise;
+      const totalSocialPersonal = emp.pensionP + emp.medicalP + emp.unemploymentP + emp.housingP;
+      const { tax, taxable } = calcIIT(emp.grossSalary, totalSocialPersonal, emp.specialDeduction);
+      const totalDeduction = totalSocialPersonal + tax;
+      const netPay = Math.round((emp.grossSalary - totalDeduction) * 100) / 100;
+      const enterprise = calcEnterpriseSocial(emp.pensionP, emp.medicalP, emp.unemploymentP, emp.housingP);
+      const totalCost = Math.round((emp.grossSalary + enterprise.total) * 100) / 100;
 
       return {
         ...emp,
-        gross,
-        socialPersonal,
+        totalSocialPersonal: Math.round(totalSocialPersonal * 100) / 100,
         tax,
-        totalDeduction,
-        netPay,
-        socialEnterprise: Math.round(socialEnterprise * 100) / 100,
-        totalCost: Math.round(totalCost * 100) / 100,
         taxable,
+        totalDeduction: Math.round(totalDeduction * 100) / 100,
+        netPay,
+        enterprise,
+        totalCost,
       };
     });
   }, [employees]);
 
   // ── 月度汇总 ──────────────────────────────────────────
   const monthlyTotals = useMemo(() => {
-    const totalGross = monthlySalaryDetails.reduce((s, e) => s + e.gross, 0);
-    const totalNet = monthlySalaryDetails.reduce((s, e) => s + e.netPay, 0);
-    const totalTax = monthlySalaryDetails.reduce((s, e) => s + e.tax, 0);
-    const totalSocialPersonal = monthlySalaryDetails.reduce((s, e) => s + e.socialPersonal, 0);
-    const totalSocialEnterprise = monthlySalaryDetails.reduce((s, e) => s + e.socialEnterprise, 0);
-    const totalCost = monthlySalaryDetails.reduce((s, e) => s + e.totalCost, 0);
+    const t = monthlySalaryDetails.reduce((acc, e) => ({
+      gross: acc.gross + e.grossSalary,
+      pensionP: acc.pensionP + e.pensionP,
+      medicalP: acc.medicalP + e.medicalP,
+      unemploymentP: acc.unemploymentP + e.unemploymentP,
+      housingP: acc.housingP + e.housingP,
+      totalSocialPersonal: acc.totalSocialPersonal + e.totalSocialPersonal,
+      tax: acc.tax + e.tax,
+      netPay: acc.netPay + e.netPay,
+      enterpriseTotal: acc.enterpriseTotal + e.enterprise.total,
+      totalCost: acc.totalCost + e.totalCost,
+    }), { gross: 0, pensionP: 0, medicalP: 0, unemploymentP: 0, housingP: 0, totalSocialPersonal: 0, tax: 0, netPay: 0, enterpriseTotal: 0, totalCost: 0 });
+
     return {
-      gross: Math.round(totalGross * 100) / 100,
-      net: Math.round(totalNet * 100) / 100,
-      tax: Math.round(totalTax * 100) / 100,
-      socialPersonal: Math.round(totalSocialPersonal * 100) / 100,
-      socialEnterprise: Math.round(totalSocialEnterprise * 100) / 100,
-      totalCost: Math.round(totalCost * 100) / 100,
+      gross: Math.round(t.gross * 100) / 100,
+      pensionP: Math.round(t.pensionP * 100) / 100,
+      medicalP: Math.round(t.medicalP * 100) / 100,
+      unemploymentP: Math.round(t.unemploymentP * 100) / 100,
+      housingP: Math.round(t.housingP * 100) / 100,
+      totalSocialPersonal: Math.round(t.totalSocialPersonal * 100) / 100,
+      tax: Math.round(t.tax * 100) / 100,
+      netPay: Math.round(t.netPay * 100) / 100,
+      enterpriseTotal: Math.round(t.enterpriseTotal * 100) / 100,
+      totalCost: Math.round(t.totalCost * 100) / 100,
     };
   }, [monthlySalaryDetails]);
 
@@ -131,15 +159,14 @@ export default function SalaryPlanner() {
     return [0, 1, 2, 3].map(qi => {
       const months = [qi * 3, qi * 3 + 1, qi * 3 + 2];
       const revenue = months.reduce((s, m) => s + (monthlyRevenues[m] || 0), 0);
-      const salaryCost = monthlyTotals.totalCost * 3;  // 季度工资成本
+      const salaryCost = monthlyTotals.totalCost * 3;
       const threshold = 300000;
       const usedPct = Math.round(revenue / threshold * 100 * 10) / 10;
       const remaining = Math.round((threshold - revenue) * 100) / 100;
       const isExempt = revenue <= threshold;
       const status = usedPct < 80 ? 'green' : usedPct < 100 ? 'yellow' : 'red';
 
-      // 季度净利润估算
-      const profitMargin = 0.04;  // 4%盈利
+      const profitMargin = 0.04;
       const grossProfit = revenue * profitMargin;
       const vat = isExempt ? 0 : Math.round(revenue * 0.01 * 100) / 100;
       const surtax = Math.round(vat * 0.06 * 100) / 100;
@@ -148,20 +175,11 @@ export default function SalaryPlanner() {
       const netProfit = Math.round((grossProfit - surtax - stamp - salaryCost - cit) * 100) / 100;
 
       return {
-        index: qi,
-        label: `Q${qi + 1}`,
-        months,
+        index: qi, label: `Q${qi + 1}`, months,
         revenue: Math.round(revenue * 100) / 100,
         salaryCost: Math.round(salaryCost * 100) / 100,
-        threshold,
-        usedPct,
-        remaining,
-        isExempt,
-        status,
-        vat,
-        surtax,
-        stamp,
-        cit,
+        threshold, usedPct, remaining, isExempt, status,
+        vat, surtax, stamp, cit,
         grossProfit: Math.round(grossProfit * 100) / 100,
         netProfit,
       };
@@ -190,28 +208,26 @@ export default function SalaryPlanner() {
     setEmployees([...employees, {
       id: Date.now(),
       name: `员工${employees.length + 1}`,
-      baseSalary: 5000,
-      allowance: 0,
+      grossSalary: 4400,
+      pensionP: 0, medicalP: 0, unemploymentP: 0, housingP: 0,
       specialDeduction: 0,
     }]);
   };
 
-  const removeEmployee = (id) => {
-    setEmployees(employees.filter(e => e.id !== id));
-  };
+  const removeEmployee = (id) => setEmployees(employees.filter(e => e.id !== id));
 
   const updateEmployee = (id, field, value) => {
     setEmployees(employees.map(e => e.id === id ? { ...e, [field]: value } : e));
   };
 
   const updateRevenue = (monthIdx, value) => {
-    const newRevenues = [...monthlyRevenues];
-    newRevenues[monthIdx] = value;
-    setMonthlyRevenues(newRevenues);
+    const next = [...monthlyRevenues];
+    next[monthIdx] = value;
+    setMonthlyRevenues(next);
   };
 
-  // ── 格式化 ────────────────────────────────────────────
   const fmt = (amt) => `¥ ${(amt || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtNum = (amt) => (amt || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   const statusStyle = {
     green: { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', icon: CheckCircle2 },
@@ -224,19 +240,22 @@ export default function SalaryPlanner() {
       {/* 说明栏 */}
       <div className="bg-blue-50 rounded-xl border border-blue-200 p-4">
         <p className="text-sm text-blue-700">
-          按照你的工资表格式，录入员工薪资信息 + 每月佣金收入，系统自动计算社保公积金、个税、实发工资，
-          并实时监控<strong>季度佣金累计是否超过30万增值税免征线</strong>。
-          调整薪资或佣金收入，即可看到对免税资格的影响。
+          按<strong>真实工资表格式</strong>展示员工薪资 + 社保明细，录入每月佣金收入后，
+          实时监控<strong>季度佣金累计是否超过30万增值税免征线</strong>。
+          调整薪资或佣金，即可看到对免税资格的影响。
         </p>
       </div>
 
       {/* ══ 工资表 ══ */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 bg-gray-50">
-          <h3 className="font-bold text-gray-800 flex items-center gap-2">
-            <Wallet size={18} className="text-primary-600" />
-            月度工资表
-          </h3>
+          <div>
+            <h3 className="font-bold text-gray-800 flex items-center gap-2">
+              <Wallet size={18} className="text-primary-600" />
+              月度工资表
+            </h3>
+            <p className="text-xs text-gray-500 mt-0.5">深圳市此刻的文化创意有限公司 · 税号: 91440300MA5FT3BJ1A</p>
+          </div>
           <button
             onClick={addEmployee}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-primary-600 text-white rounded-lg hover:bg-primary-700"
@@ -251,15 +270,24 @@ export default function SalaryPlanner() {
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200 text-gray-600">
                 <th className="px-2 py-3 text-center font-medium w-10">序号</th>
-                <th className="px-2 py-3 text-left font-medium w-24">姓名</th>
-                <th className="px-2 py-3 text-right font-medium">基本工资</th>
-                <th className="px-2 py-3 text-right font-medium">岗位/补贴</th>
-                <th className="px-2 py-3 text-right font-medium bg-blue-50/50">应发合计</th>
-                <th className="px-2 py-3 text-right font-medium">社保个人</th>
+                <th className="px-2 py-3 text-left font-medium w-20">姓名</th>
+                <th className="px-2 py-3 text-right font-medium bg-blue-50/50">工资总额</th>
+                {/* 个人社保 */}
+                <th className="px-2 py-3 text-right font-medium">个人养老</th>
+                <th className="px-2 py-3 text-right font-medium">个人医疗</th>
+                <th className="px-2 py-3 text-right font-medium">个人失业</th>
+                <th className="px-2 py-3 text-right font-medium">个人公积金</th>
+                <th className="px-2 py-3 text-right font-medium">社保合计</th>
                 <th className="px-2 py-3 text-right font-medium">专项附加扣除</th>
                 <th className="px-2 py-3 text-right font-medium">个税</th>
                 <th className="px-2 py-3 text-right font-medium bg-green-50/50">实发工资</th>
-                <th className="px-2 py-3 text-right font-medium">社保企业</th>
+                {/* 企业社保 */}
+                <th className="px-2 py-3 text-right font-medium">企业养老</th>
+                <th className="px-2 py-3 text-right font-medium">企业医疗</th>
+                <th className="px-2 py-3 text-right font-medium">企业失业</th>
+                <th className="px-2 py-3 text-right font-medium">工伤保险</th>
+                <th className="px-2 py-3 text-right font-medium">企业公积金</th>
+                <th className="px-2 py-3 text-right font-medium">企业社保合计</th>
                 <th className="px-2 py-3 text-right font-medium bg-orange-50/50">用工成本合计</th>
                 <th className="px-2 py-3 text-center font-medium w-12">操作</th>
               </tr>
@@ -275,45 +303,60 @@ export default function SalaryPlanner() {
                       className="w-full px-2 py-1 border border-gray-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-primary-500"
                     />
                   </td>
-                  <td className="px-2 py-2">
+                  {/* 工资总额 */}
+                  <td className="px-2 py-2 bg-blue-50/20">
                     <input
                       type="number"
-                      step="100"
-                      value={emp.baseSalary}
-                      onChange={(e) => updateEmployee(emp.id, 'baseSalary', parseFloat(e.target.value) || 0)}
+                      step="0.01"
+                      value={emp.grossSalary}
+                      onChange={(e) => updateEmployee(emp.id, 'grossSalary', parseFloat(e.target.value) || 0)}
                       className="w-24 px-2 py-1 border border-gray-200 rounded text-sm text-right focus:outline-none focus:ring-1 focus:ring-primary-500"
                     />
                   </td>
+                  {/* 个人社保 — 可编辑 */}
                   <td className="px-2 py-2">
-                    <input
-                      type="number"
-                      step="100"
-                      value={emp.allowance}
-                      onChange={(e) => updateEmployee(emp.id, 'allowance', parseFloat(e.target.value) || 0)}
-                      className="w-24 px-2 py-1 border border-gray-200 rounded text-sm text-right focus:outline-none focus:ring-1 focus:ring-primary-500"
-                    />
+                    <input type="number" step="0.01" value={emp.pensionP}
+                      onChange={(e) => updateEmployee(emp.id, 'pensionP', parseFloat(e.target.value) || 0)}
+                      className="w-20 px-1 py-1 border border-gray-200 rounded text-sm text-right focus:outline-none focus:ring-1 focus:ring-primary-500" />
                   </td>
-                  <td className="px-2 py-2 text-right font-medium text-blue-700 bg-blue-50/30">{fmt(emp.gross)}</td>
-                  <td className="px-2 py-2 text-right text-gray-600">{fmt(emp.socialPersonal)}</td>
                   <td className="px-2 py-2">
-                    <input
-                      type="number"
-                      step="100"
-                      value={emp.specialDeduction}
+                    <input type="number" step="0.01" value={emp.medicalP}
+                      onChange={(e) => updateEmployee(emp.id, 'medicalP', parseFloat(e.target.value) || 0)}
+                      className="w-20 px-1 py-1 border border-gray-200 rounded text-sm text-right focus:outline-none focus:ring-1 focus:ring-primary-500" />
+                  </td>
+                  <td className="px-2 py-2">
+                    <input type="number" step="0.01" value={emp.unemploymentP}
+                      onChange={(e) => updateEmployee(emp.id, 'unemploymentP', parseFloat(e.target.value) || 0)}
+                      className="w-20 px-1 py-1 border border-gray-200 rounded text-sm text-right focus:outline-none focus:ring-1 focus:ring-primary-500" />
+                  </td>
+                  <td className="px-2 py-2">
+                    <input type="number" step="0.01" value={emp.housingP}
+                      onChange={(e) => updateEmployee(emp.id, 'housingP', parseFloat(e.target.value) || 0)}
+                      className="w-20 px-1 py-1 border border-gray-200 rounded text-sm text-right focus:outline-none focus:ring-1 focus:ring-primary-500" />
+                  </td>
+                  <td className="px-2 py-2 text-right text-gray-600 font-medium">{fmtNum(emp.totalSocialPersonal)}</td>
+                  {/* 专项附加扣除 */}
+                  <td className="px-2 py-2">
+                    <input type="number" step="100" value={emp.specialDeduction}
                       onChange={(e) => updateEmployee(emp.id, 'specialDeduction', parseFloat(e.target.value) || 0)}
-                      className="w-20 px-2 py-1 border border-gray-200 rounded text-sm text-right focus:outline-none focus:ring-1 focus:ring-primary-500"
-                    />
+                      className="w-20 px-1 py-1 border border-gray-200 rounded text-sm text-right focus:outline-none focus:ring-1 focus:ring-primary-500" />
                   </td>
-                  <td className="px-2 py-2 text-right text-orange-600">{fmt(emp.tax)}</td>
-                  <td className="px-2 py-2 text-right font-bold text-green-700 bg-green-50/30">{fmt(emp.netPay)}</td>
-                  <td className="px-2 py-2 text-right text-gray-600">{fmt(emp.socialEnterprise)}</td>
-                  <td className="px-2 py-2 text-right font-medium text-orange-700 bg-orange-50/30">{fmt(emp.totalCost)}</td>
+                  {/* 个税 */}
+                  <td className="px-2 py-2 text-right text-orange-600">{fmtNum(emp.tax)}</td>
+                  {/* 实发工资 */}
+                  <td className="px-2 py-2 text-right font-bold text-green-700 bg-green-50/30">{fmtNum(emp.netPay)}</td>
+                  {/* 企业社保 — 自动计算 */}
+                  <td className="px-2 py-2 text-right text-gray-500">{fmtNum(emp.enterprise.pension)}</td>
+                  <td className="px-2 py-2 text-right text-gray-500">{fmtNum(emp.enterprise.medical)}</td>
+                  <td className="px-2 py-2 text-right text-gray-500">{fmtNum(emp.enterprise.unemployment)}</td>
+                  <td className="px-2 py-2 text-right text-gray-500">{fmtNum(emp.enterprise.workInjury)}</td>
+                  <td className="px-2 py-2 text-right text-gray-500">{fmtNum(emp.enterprise.housing)}</td>
+                  <td className="px-2 py-2 text-right text-gray-600 font-medium">{fmtNum(emp.enterprise.total)}</td>
+                  {/* 用工成本 */}
+                  <td className="px-2 py-2 text-right font-medium text-orange-700 bg-orange-50/30">{fmtNum(emp.totalCost)}</td>
                   <td className="px-2 py-2 text-center">
-                    <button
-                      onClick={() => removeEmployee(emp.id)}
-                      className="p-1 text-red-400 hover:bg-red-50 rounded"
-                      title="删除"
-                    >
+                    <button onClick={() => removeEmployee(emp.id)}
+                      className="p-1 text-red-400 hover:bg-red-50 rounded" title="删除">
                       <Trash2 size={14} />
                     </button>
                   </td>
@@ -324,26 +367,27 @@ export default function SalaryPlanner() {
             <tfoot>
               <tr className="bg-gray-100 border-t-2 border-gray-300 font-bold">
                 <td colSpan="2" className="px-2 py-3 text-center text-gray-700">月度合计</td>
-                <td className="px-2 py-3 text-right text-gray-700">{fmt(employees.reduce((s, e) => s + e.baseSalary, 0))}</td>
-                <td className="px-2 py-3 text-right text-gray-700">{fmt(employees.reduce((s, e) => s + e.allowance, 0))}</td>
-                <td className="px-2 py-3 text-right text-blue-700 bg-blue-50/50">{fmt(monthlyTotals.gross)}</td>
-                <td className="px-2 py-3 text-right text-gray-600">{fmt(monthlyTotals.socialPersonal)}</td>
-                <td className="px-2 py-3 text-right text-gray-600">{fmt(employees.reduce((s, e) => s + e.specialDeduction, 0))}</td>
-                <td className="px-2 py-3 text-right text-orange-600">{fmt(monthlyTotals.tax)}</td>
-                <td className="px-2 py-3 text-right text-green-700 bg-green-50/50">{fmt(monthlyTotals.net)}</td>
-                <td className="px-2 py-3 text-right text-gray-600">{fmt(monthlyTotals.socialEnterprise)}</td>
-                <td className="px-2 py-3 text-right text-orange-700 bg-orange-50/50">{fmt(monthlyTotals.totalCost)}</td>
+                <td className="px-2 py-3 text-right text-blue-700 bg-blue-50/50">{fmtNum(monthlyTotals.gross)}</td>
+                <td className="px-2 py-3 text-right text-gray-600">{fmtNum(monthlyTotals.pensionP)}</td>
+                <td className="px-2 py-3 text-right text-gray-600">{fmtNum(monthlyTotals.medicalP)}</td>
+                <td className="px-2 py-3 text-right text-gray-600">{fmtNum(monthlyTotals.unemploymentP)}</td>
+                <td className="px-2 py-3 text-right text-gray-600">{fmtNum(monthlyTotals.housingP)}</td>
+                <td className="px-2 py-3 text-right text-gray-600">{fmtNum(monthlyTotals.totalSocialPersonal)}</td>
+                <td className="px-2 py-3 text-right text-gray-500">{fmtNum(employees.reduce((s, e) => s + e.specialDeduction, 0))}</td>
+                <td className="px-2 py-3 text-right text-orange-600">{fmtNum(monthlyTotals.tax)}</td>
+                <td className="px-2 py-3 text-right text-green-700 bg-green-50/50">{fmtNum(monthlyTotals.netPay)}</td>
+                <td colSpan="5" className="px-2 py-3 text-right text-gray-400 text-xs">企业社保明细 →</td>
+                <td className="px-2 py-3 text-right text-gray-600">{fmtNum(monthlyTotals.enterpriseTotal)}</td>
+                <td className="px-2 py-3 text-right text-orange-700 bg-orange-50/50">{fmtNum(monthlyTotals.totalCost)}</td>
                 <td></td>
               </tr>
             </tfoot>
           </table>
         </div>
 
-        {/* 比例说明 */}
         <div className="px-5 py-3 bg-gray-50 border-t border-gray-200 text-xs text-gray-500">
-          社保个人比例 ~{((SOCIAL_PERSONAL_RATE) * 100).toFixed(1)}%（养老8%+医疗2%+失业0.3%+公积金7%）·
-          社保企业比例 ~{((SOCIAL_ENTERPRISE_RATE) * 100).toFixed(1)}%（养老15%+医疗5.2%+失业0.7%+工伤0.2%+公积金7%）·
-          个税起征点 ¥5,000/月
+          社保企业部分按深圳比例自动反推：养老15% · 医疗5.2% · 失业0.7% · 工伤0.2% · 公积金7%（与个人同基数）·
+          个税起征点 ¥5,000/月 · 数据来源: 2026年5月工资表
         </div>
       </div>
 
@@ -356,25 +400,15 @@ export default function SalaryPlanner() {
         <div className="grid grid-cols-6 gap-3">
           {MONTHS.map((month, idx) => {
             const quarterIdx = Math.floor(idx / 3);
-            const quarterColors = ['blue', 'green', 'orange', 'purple'];
-            const colors = {
-              blue: 'border-blue-200 bg-blue-50/30',
-              green: 'border-green-200 bg-green-50/30',
-              orange: 'border-orange-200 bg-orange-50/30',
-              purple: 'border-purple-200 bg-purple-50/30',
-            };
+            const quarterColors = { 0: 'border-blue-200 bg-blue-50/30', 1: 'border-green-200 bg-green-50/30', 2: 'border-orange-200 bg-orange-50/30', 3: 'border-purple-200 bg-purple-50/30' };
             return (
-              <div key={idx} className={`rounded-lg border p-3 ${colors[quarterColors[quarterIdx]]}`}>
+              <div key={idx} className={`rounded-lg border p-3 ${quarterColors[quarterIdx]}`}>
                 <p className="text-xs text-gray-500 mb-1">{month}</p>
                 <div className="flex items-center gap-1">
                   <span className="text-xs text-gray-400">¥</span>
-                  <input
-                    type="number"
-                    step="1000"
-                    value={monthlyRevenues[idx] || 0}
+                  <input type="number" step="1000" value={monthlyRevenues[idx] || 0}
                     onChange={(e) => updateRevenue(idx, parseFloat(e.target.value) || 0)}
-                    className="w-full px-1 py-1 border border-gray-200 rounded text-sm text-right focus:outline-none focus:ring-1 focus:ring-primary-500"
-                  />
+                    className="w-full px-1 py-1 border border-gray-200 rounded text-sm text-right focus:outline-none focus:ring-1 focus:ring-primary-500" />
                 </div>
               </div>
             );
@@ -401,63 +435,30 @@ export default function SalaryPlanner() {
                     {q.isExempt ? '免税' : '需缴税'}
                   </span>
                 </div>
-
-                {/* 进度条 */}
                 <div className="mb-3">
                   <div className="flex items-center justify-between text-xs mb-1">
                     <span className="text-gray-500">季度佣金</span>
                     <span className={style.text}>{q.usedPct}%</span>
                   </div>
                   <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all ${
-                        q.status === 'green' ? 'bg-green-500' : q.status === 'yellow' ? 'bg-yellow-500' : 'bg-red-500'
-                      }`}
-                      style={{ width: `${Math.min(100, q.usedPct)}%` }}
-                    />
+                    <div className={`h-full rounded-full transition-all ${q.status === 'green' ? 'bg-green-500' : q.status === 'yellow' ? 'bg-yellow-500' : 'bg-red-500'}`}
+                      style={{ width: `${Math.min(100, q.usedPct)}%` }} />
                   </div>
                   <div className="flex items-center justify-between text-xs mt-1">
                     <span className="text-gray-600">{fmt(q.revenue)}</span>
                     <span className="text-gray-400">/ {fmt(q.threshold)}</span>
                   </div>
                 </div>
-
-                {/* 状态信息 */}
-                {q.status === 'green' && (
-                  <p className="text-xs text-green-600">
-                    剩余额度 {fmt(q.remaining)}，安全
-                  </p>
-                )}
-                {q.status === 'yellow' && (
-                  <p className="text-xs text-yellow-600">
-                    ⚠️ 已用 {q.usedPct}%，仅剩 {fmt(q.remaining)}，下月慎接单
-                  </p>
-                )}
-                {q.status === 'red' && (
-                  <p className="text-xs text-red-600">
-                    ⛔ 已超免征线！全额按1%征收，增值税 = {fmt(q.vat)}
-                  </p>
-                )}
-
-                {/* 利润简报 */}
+                {q.status === 'green' && <p className="text-xs text-green-600">剩余额度 {fmt(q.remaining)}，安全</p>}
+                {q.status === 'yellow' && <p className="text-xs text-yellow-600">⚠️ 已用 {q.usedPct}%，仅剩 {fmt(q.remaining)}，下月慎接单</p>}
+                {q.status === 'red' && <p className="text-xs text-red-600">⛔ 已超免征线！全额按1%征收，增值税 = {fmt(q.vat)}</p>}
                 <div className="mt-3 pt-3 border-t border-gray-200/50 space-y-1 text-xs">
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">工资成本</span>
-                    <span className="text-gray-700">{fmt(q.salaryCost)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">毛利润(4%)</span>
-                    <span className="text-gray-700">{fmt(q.grossProfit)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">税费合计</span>
-                    <span className="text-gray-700">{fmt(q.vat + q.surtax + q.stamp + q.cit)}</span>
-                  </div>
+                  <div className="flex justify-between"><span className="text-gray-500">工资成本</span><span className="text-gray-700">{fmt(q.salaryCost)}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">毛利润(4%)</span><span className="text-gray-700">{fmt(q.grossProfit)}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-500">税费合计</span><span className="text-gray-700">{fmt(q.vat + q.surtax + q.stamp + q.cit)}</span></div>
                   <div className="flex justify-between font-bold">
                     <span className="text-gray-600">季度净利润</span>
-                    <span className={q.netProfit >= 0 ? 'text-green-600' : 'text-red-600'}>
-                      {fmt(q.netProfit)}
-                    </span>
+                    <span className={q.netProfit >= 0 ? 'text-green-600' : 'text-red-600'}>{fmt(q.netProfit)}</span>
                   </div>
                 </div>
               </div>
@@ -473,28 +474,11 @@ export default function SalaryPlanner() {
           年度汇总估算
         </h3>
         <div className="grid grid-cols-5 gap-4">
-          <div>
-            <p className="text-xs text-gray-400 mb-1">年度佣金总收入</p>
-            <p className="text-lg font-bold">{fmt(annualSummary.revenue)}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-400 mb-1">年度工资成本</p>
-            <p className="text-lg font-bold text-orange-300">{fmt(annualSummary.salaryCost)}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-400 mb-1">年度毛利润(4%)</p>
-            <p className="text-lg font-bold text-blue-300">{fmt(annualSummary.grossProfit)}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-400 mb-1">年度税费合计</p>
-            <p className="text-lg font-bold text-yellow-300">{fmt(annualSummary.totalTax)}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-400 mb-1">年度净利润</p>
-            <p className={`text-lg font-bold ${annualSummary.netProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-              {fmt(annualSummary.netProfit)}
-            </p>
-          </div>
+          <div><p className="text-xs text-gray-400 mb-1">年度佣金总收入</p><p className="text-lg font-bold">{fmt(annualSummary.revenue)}</p></div>
+          <div><p className="text-xs text-gray-400 mb-1">年度工资成本</p><p className="text-lg font-bold text-orange-300">{fmt(annualSummary.salaryCost)}</p></div>
+          <div><p className="text-xs text-gray-400 mb-1">年度毛利润(4%)</p><p className="text-lg font-bold text-blue-300">{fmt(annualSummary.grossProfit)}</p></div>
+          <div><p className="text-xs text-gray-400 mb-1">年度税费合计</p><p className="text-lg font-bold text-yellow-300">{fmt(annualSummary.totalTax)}</p></div>
+          <div><p className="text-xs text-gray-400 mb-1">年度净利润</p><p className={`text-lg font-bold ${annualSummary.netProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>{fmt(annualSummary.netProfit)}</p></div>
         </div>
       </div>
 
@@ -520,7 +504,7 @@ export default function SalaryPlanner() {
           )}
           {annualSummary.netProfit < 0 && (
             <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700">
-              ⛔ 年度净利润为负！工资成本超过毛利润，建议降低工资支出或增加佣金收入。
+              ⛔ 年度净利润为负！工资成本（{fmt(monthlyTotals.totalCost)}/月）超过毛利润，建议降低工资支出或增加佣金收入。
             </div>
           )}
           {quarters.filter(q => q.status === 'green').length === 4 && annualSummary.netProfit > 0 && (
@@ -530,7 +514,8 @@ export default function SalaryPlanner() {
             </div>
           )}
           <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-700">
-            💡 每月工资成本为 {fmt(monthlyTotals.totalCost)}，季度工资成本为 {fmt(monthlyTotals.totalCost * 3)}。
+            💡 每月工资成本为 {fmt(monthlyTotals.totalCost)}（{employees.length}人），
+            季度工资成本为 {fmt(monthlyTotals.totalCost * 3)}。
             要保持季度佣金 ≤ 30万，月均佣金应控制在 {fmt(100000)} 以内。
           </div>
         </div>
