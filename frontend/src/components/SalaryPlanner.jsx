@@ -353,8 +353,9 @@ function generateSmartCashoutPlan(enabledEmployees, commission, monthRevenue) {
   const remainingAfterTier1 = Math.max(0, cashoutTarget - taxFreeSalary);
   const reimburseAmount = Math.round(Math.min(maxReimburse, remainingAfterTier1) * 100) / 100;
 
-  // 第三层：征税工资
+  // 第三层：征税工资（仅超出免税线的部分）
   const salaryNeeded = Math.max(0, Math.round((cashoutTarget - reimburseAmount) * 100) / 100);
+  const taxedSalary = Math.max(0, Math.round((salaryNeeded - taxFreeSalary) * 100) / 100); // 仅征税部分
 
   // 生成混合方案工资
   const salaryPlan = generateCashoutPlan(enabledEmployees, salaryNeeded);
@@ -375,7 +376,7 @@ function generateSmartCashoutPlan(enabledEmployees, commission, monthRevenue) {
 
   return {
     commission, profit, taxReserve, cashoutTarget,
-    taxFreeSalary, reimburseAmount, salaryNeeded,
+    taxFreeSalary, reimburseAmount, salaryNeeded, taxedSalary,
     salaryPlan, reimbursePlan,
     pureSalaryCost, pureSalaryIIT,
     mixedSalaryCost, mixedSalaryIIT, mixedTotalCost,
@@ -779,14 +780,16 @@ export default function SalaryPlanner() {
                 </div>
 
                 {/* 第三层：征税工资 */}
-                <div className={`rounded-lg border p-3 ${smartPlan.salaryNeeded > smartPlan.taxFreeSalary ? 'border-orange-300 bg-orange-50' : 'border-gray-200 bg-gray-50 opacity-50'}`}>
+                <div className={`rounded-lg border p-3 ${smartPlan.taxedSalary > 0 ? 'border-orange-300 bg-orange-50' : 'border-gray-200 bg-gray-50 opacity-50'}`}>
                   <div className="flex items-center gap-1.5 mb-1">
                     <span className="text-xs font-bold text-orange-700">第三层 · 征税工资</span>
-                    {smartPlan.salaryNeeded > smartPlan.taxFreeSalary && smartPlan.mixedSalaryIIT > 0 && <AlertTriangle size={12} className="text-orange-500" />}
+                    {smartPlan.taxedSalary > 0 && smartPlan.mixedSalaryIIT > 0 && <AlertTriangle size={12} className="text-orange-500" />}
                   </div>
-                  <p className="text-xl font-bold text-orange-700">{fmtNum(smartPlan.salaryNeeded)}</p>
+                  <p className="text-xl font-bold text-orange-700">{fmtNum(smartPlan.taxedSalary)}</p>
                   <p className="text-xs text-gray-500 mt-0.5">
-                    个税 {fmtNum(smartPlan.mixedSalaryIIT)} · 等额化分配最小化税率
+                    {smartPlan.taxedSalary > 0
+                      ? `超出免税线部分 · 个税 ${fmtNum(smartPlan.mixedSalaryIIT)} · 等额化分配`
+                      : '无需征税 · 全部在免税线内'}
                   </p>
                 </div>
               </div>
