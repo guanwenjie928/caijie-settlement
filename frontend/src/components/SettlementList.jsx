@@ -14,7 +14,7 @@ import {
 export default function SettlementList() {
   const [records, setRecords] = useState([]);
   const [total, setTotal] = useState(0);
-  const [summary, setSummary] = useState({ total_original: 0, total_profit: 0, total_tax: 0, total_settlement: 0, total_settled: 0, count: 0 });
+  const [summary, setSummary] = useState({ total_original: 0, total_profit: 0, total_tax: 0, total_settlement: 0, total_settled: 0, total_unsettled: 0, count: 0 });
   const [loading, setLoading] = useState(false);
 
   // 筛选条件
@@ -234,7 +234,7 @@ export default function SettlementList() {
       </div>
 
       {/* 统计卡片 */}
-      <div className="grid grid-cols-5 gap-4 mb-4">
+      <div className="grid grid-cols-6 gap-4 mb-4">
         <div className="bg-white rounded-lg border border-gray-200 p-4">
           <p className="text-xs text-gray-500 mb-1">原始金额合计</p>
           <p className="text-lg font-bold text-gray-800">¥ {formatAmount(summary.total_original)}</p>
@@ -254,6 +254,10 @@ export default function SettlementList() {
         <div className="bg-white rounded-lg border border-gray-200 p-4">
           <p className="text-xs text-gray-500 mb-1">已结金额合计</p>
           <p className="text-lg font-bold text-cyan-600">¥ {formatAmount(summary.total_settled)}</p>
+        </div>
+        <div className="bg-white rounded-lg border border-red-200 p-4 bg-red-50/30">
+          <p className="text-xs text-red-500 mb-1">未结金额合计</p>
+          <p className="text-lg font-bold text-red-600">¥ {formatAmount(summary.total_unsettled)}</p>
         </div>
       </div>
 

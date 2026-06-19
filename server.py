@@ -243,7 +243,8 @@ async def list_records(
                 COALESCE(SUM(profit_amount), 0)     AS total_profit,
                 COALESCE(SUM(tax_amount), 0)         AS total_tax,
                 COALESCE(SUM(settlement_amount), 0)  AS total_settlement,
-                COALESCE(SUM(settled_amount), 0)     AS total_settled
+                COALESCE(SUM(settled_amount), 0)     AS total_settled,
+                COALESCE(SUM(CASE WHEN status != 'paid' THEN settlement_amount - settled_amount ELSE 0 END), 0) AS total_unsettled
             FROM settlements WHERE {where_clause}
         """, params).fetchone()
 
@@ -260,6 +261,7 @@ async def list_records(
             "total_tax": round(summary_row["total_tax"], 2),
             "total_settlement": round(summary_row["total_settlement"], 2),
             "total_settled": round(summary_row["total_settled"], 2),
+            "total_unsettled": round(summary_row["total_unsettled"], 2),
             "count": total,
         }
     })
@@ -424,8 +426,10 @@ async def stats_by_person(
                 SUM(settlement_amount) as total_settlement,
                 SUM(settled_amount) as total_settled,
                 SUM(CASE WHEN status = 'paid' THEN settlement_amount ELSE 0 END) as paid_amount,
-                SUM(CASE WHEN status = 'settling' THEN settlement_amount ELSE 0 END) as settling_amount,
-                SUM(CASE WHEN status = 'unpaid' THEN settlement_amount ELSE 0 END) as unpaid_amount,
+                SUM(CASE WHEN status = 'settling' THEN settled_amount ELSE 0 END) as settling_amount,
+                SUM(CASE WHEN status = 'unpaid' THEN settlement_amount
+                         WHEN status = 'settling' THEN settlement_amount - settled_amount
+                         ELSE 0 END) as unpaid_amount,
                 SUM(CASE WHEN status = 'paid' THEN 1 ELSE 0 END) as paid_count,
                 SUM(CASE WHEN status = 'settling' THEN 1 ELSE 0 END) as settling_count,
                 SUM(CASE WHEN status = 'unpaid' THEN 1 ELSE 0 END) as unpaid_count
@@ -451,8 +455,10 @@ async def stats_by_person(
                 SUM(settlement_amount) as settlement,
                 SUM(settled_amount) as settled,
                 SUM(CASE WHEN status = 'paid' THEN settlement_amount ELSE 0 END) as paid,
-                SUM(CASE WHEN status = 'settling' THEN settlement_amount ELSE 0 END) as settling,
-                SUM(CASE WHEN status = 'unpaid' THEN settlement_amount ELSE 0 END) as unpaid
+                SUM(CASE WHEN status = 'settling' THEN settled_amount ELSE 0 END) as settling,
+                SUM(CASE WHEN status = 'unpaid' THEN settlement_amount
+                         WHEN status = 'settling' THEN settlement_amount - settled_amount
+                         ELSE 0 END) as unpaid
             FROM settlements WHERE {where_clause}
             GROUP BY person_name, period
             ORDER BY person_name, period

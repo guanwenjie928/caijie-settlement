@@ -128,12 +128,12 @@ export default function PersonStats() {
           <p className="text-lg font-bold text-green-600">¥ {formatAmount(grandTotal.paid)}</p>
         </div>
         <div className="bg-white rounded-lg border border-blue-200 p-4 bg-blue-50/30">
-          <p className="text-xs text-blue-500 mb-1">正在结算金额</p>
+          <p className="text-xs text-blue-500 mb-1">正在结算(已付)</p>
           <p className="text-lg font-bold text-blue-600">¥ {formatAmount(grandTotal.settling)}</p>
         </div>
-        <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 mb-1">未结清金额</p>
-          <p className="text-lg font-bold text-orange-600">¥ {formatAmount(grandTotal.unpaid)}</p>
+        <div className="bg-white rounded-lg border border-red-200 p-4 bg-red-50/30">
+          <p className="text-xs text-red-500 mb-1">未结清金额(含剩余)</p>
+          <p className="text-lg font-bold text-red-600">¥ {formatAmount(grandTotal.unpaid)}</p>
         </div>
       </div>
 
@@ -196,8 +196,8 @@ export default function PersonStats() {
                         <p className="font-bold text-green-600">¥ {formatAmount(person.total_settlement)}</p>
                       </div>
                       <div className="text-right">
-                        <p className="text-xs text-gray-500">未结清</p>
-                        <p className="font-bold text-orange-600">¥ {formatAmount(person.unpaid_amount)}</p>
+                        <p className="text-xs text-red-500">未结清(含剩余)</p>
+                        <p className="font-bold text-red-600">¥ {formatAmount(person.unpaid_amount)}</p>
                       </div>
                       {isExpanded ? <ChevronUp size={18} className="text-gray-400" /> : <ChevronDown size={18} className="text-gray-400" />}
                     </div>
@@ -237,8 +237,8 @@ export default function PersonStats() {
                           <th className="px-4 py-2 text-right font-medium text-orange-600">税费 1%</th>
                           <th className="px-4 py-2 text-right font-medium">结算金额 95%</th>
                           <th className="px-4 py-2 text-right font-medium">已结清</th>
-                          <th className="px-4 py-2 text-right font-medium text-blue-600">正在结算</th>
-                          <th className="px-4 py-2 text-right font-medium">未结清</th>
+                          <th className="px-4 py-2 text-right font-medium text-blue-600">正在结算(已付)</th>
+                          <th className="px-4 py-2 text-right font-medium text-red-600">未结清(含剩余)</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -252,7 +252,7 @@ export default function PersonStats() {
                             <td className="px-4 py-2 text-right text-green-600 font-medium">¥ {formatAmount(period.settlement)}</td>
                             <td className="px-4 py-2 text-right text-green-700">¥ {formatAmount(period.paid)}</td>
                             <td className="px-4 py-2 text-right text-blue-700">¥ {formatAmount(period.settling)}</td>
-                            <td className="px-4 py-2 text-right text-orange-700">¥ {formatAmount(period.unpaid)}</td>
+                            <td className="px-4 py-2 text-right text-red-700">¥ {formatAmount(period.unpaid)}</td>
                           </tr>
                         ))}
                       </tbody>
