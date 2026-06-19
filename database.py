@@ -82,6 +82,22 @@ def init_db():
 
         conn.commit()
 
+        # 修复历史数据：如果存在 profit_amount=0 且 original_amount>0 的记录，重新计算
+        bad_rows = conn.execute(
+            "SELECT id, original_amount, profit_rate, tax_rate FROM settlements "
+            "WHERE is_deleted = 0 AND original_amount > 0 AND profit_amount = 0"
+        ).fetchall()
+        if bad_rows:
+            for row in bad_rows:
+                amounts = calc_amounts(row["original_amount"], row["profit_rate"], row["tax_rate"])
+                conn.execute(
+                    "UPDATE settlements SET profit_amount=?, tax_amount=?, settlement_amount=? WHERE id=?",
+                    (amounts["profit_amount"], amounts["tax_amount"], amounts["settlement_amount"], row["id"])
+                )
+            conn.commit()
+            import logging
+            logging.getLogger("database").info(f"修复了 {len(bad_rows)} 条历史数据的金额计算")
+
 
 @contextmanager
 def get_connection():

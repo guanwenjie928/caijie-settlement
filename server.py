@@ -235,6 +235,16 @@ async def list_records(
             params + [page_size, offset]
         ).fetchall()
 
+        # 统计卡片：汇总全部符合条件的记录（不只是当前页）
+        summary_row = conn.execute(f"""
+            SELECT
+                COALESCE(SUM(original_amount), 0)   AS total_original,
+                COALESCE(SUM(profit_amount), 0)     AS total_profit,
+                COALESCE(SUM(tax_amount), 0)         AS total_tax,
+                COALESCE(SUM(settlement_amount), 0)  AS total_settlement
+            FROM settlements WHERE {where_clause}
+        """, params).fetchone()
+
     all_records = [record_to_dict(r) for r in rows]
     return JSONResponse({
         "success": True,
@@ -243,11 +253,11 @@ async def list_records(
         "page": page,
         "page_size": page_size,
         "summary": {
-            "total_original": round(sum(r["original_amount"] or 0 for r in all_records), 2),
-            "total_profit": round(sum(r["profit_amount"] or 0 for r in all_records), 2),
-            "total_tax": round(sum(r["tax_amount"] or 0 for r in all_records), 2),
-            "total_settlement": round(sum(r["settlement_amount"] or 0 for r in all_records), 2),
-            "count": len(all_records),
+            "total_original": round(summary_row["total_original"], 2),
+            "total_profit": round(summary_row["total_profit"], 2),
+            "total_tax": round(summary_row["total_tax"], 2),
+            "total_settlement": round(summary_row["total_settlement"], 2),
+            "count": total,
         }
     })
 
