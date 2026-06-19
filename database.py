@@ -82,10 +82,12 @@ def init_db():
 
         conn.commit()
 
-        # 修复历史数据：如果存在 profit_amount=0 且 original_amount>0 的记录，重新计算
+        # 修复历史数据：校验 profit + tax + settlement ≈ original，不一致则重算
         bad_rows = conn.execute(
-            "SELECT id, original_amount, profit_rate, tax_rate FROM settlements "
-            "WHERE is_deleted = 0 AND original_amount > 0 AND profit_amount = 0"
+            "SELECT id, original_amount, profit_rate, tax_rate, "
+            "profit_amount, tax_amount, settlement_amount FROM settlements "
+            "WHERE is_deleted = 0 AND original_amount > 0 AND "
+            "ABS(profit_amount + tax_amount + settlement_amount - original_amount) > 0.01"
         ).fetchall()
         if bad_rows:
             for row in bad_rows:
@@ -96,7 +98,7 @@ def init_db():
                 )
             conn.commit()
             import logging
-            logging.getLogger("database").info(f"修复了 {len(bad_rows)} 条历史数据的金额计算")
+            logging.getLogger("database").info(f"修复了 {len(bad_rows)} 条历史数据的金额计算（三项之和不等于原始金额）")
 
 
 @contextmanager
