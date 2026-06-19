@@ -21,7 +21,7 @@ from typing import Optional
 
 from database import (
     init_db, get_connection, get_setting, set_setting,
-    get_profit_rate, get_tax_rate, calc_amounts, record_to_dict, get_now_iso
+    get_profit_rate, get_tax_rate, calc_amounts, derive_status, record_to_dict, get_now_iso
 )
 from ocr_service import recognize_invoice
 from excel_service import export_to_excel
@@ -85,6 +85,7 @@ class RecordUpdate(BaseModel):
     company_name: Optional[str] = None
     tax_number: Optional[str] = None
     original_amount: Optional[float] = None
+    settled_amount: Optional[float] = None
     entry_time: Optional[str] = None
     status: Optional[str] = None
     remark: Optional[str] = None
@@ -209,7 +210,7 @@ async def list_records(
         conditions.append("is_deleted = 0")
     else:
         conditions.append("is_deleted = 1")
-    if status and status in ("paid", "unpaid"):
+    if status and status in ("paid", "unpaid", "settling"):
         conditions.append("status = ?")
         params.append(status)
     if company_name:
@@ -241,7 +242,8 @@ async def list_records(
                 COALESCE(SUM(original_amount), 0)   AS total_original,
                 COALESCE(SUM(profit_amount), 0)     AS total_profit,
                 COALESCE(SUM(tax_amount), 0)         AS total_tax,
-                COALESCE(SUM(settlement_amount), 0)  AS total_settlement
+                COALESCE(SUM(settlement_amount), 0)  AS total_settlement,
+                COALESCE(SUM(settled_amount), 0)     AS total_settled
             FROM settlements WHERE {where_clause}
         """, params).fetchone()
 
@@ -257,6 +259,7 @@ async def list_records(
             "total_profit": round(summary_row["total_profit"], 2),
             "total_tax": round(summary_row["total_tax"], 2),
             "total_settlement": round(summary_row["total_settlement"], 2),
+            "total_settled": round(summary_row["total_settled"], 2),
             "count": total,
         }
     })
@@ -299,13 +302,33 @@ async def update_record(record_id: int, req: RecordUpdate):
             updates.append("settlement_amount = ?")
             params.append(amounts["settlement_amount"])
 
-        if req.status is not None and req.status in ("paid", "unpaid"):
+        # 已结金额更新 + 自动推断状态
+        if req.settled_amount is not None:
+            updates.append("settled_amount = ?")
+            params.append(req.settled_amount)
+            # 根据 settled_amount 推断 status
+            settlement_val = amounts["settlement_amount"] if req.original_amount is not None else row["settlement_amount"]
+            new_status = derive_status(req.settled_amount, settlement_val)
+            updates.append("status = ?")
+            params.append(new_status)
+            if new_status == "paid":
+                updates.append("settled_time = ?")
+                params.append(get_now_iso())
+            else:
+                updates.append("settled_time = NULL")
+        elif req.status is not None and req.status in ("paid", "unpaid", "settling"):
             updates.append("status = ?")
             params.append(req.status)
             if req.status == "paid":
                 updates.append("settled_time = ?")
                 params.append(get_now_iso())
-            else:
+                updates.append("settled_amount = ?")
+                params.append(row["settlement_amount"])
+            elif req.status == "unpaid":
+                updates.append("settled_time = NULL")
+                updates.append("settled_amount = ?")
+                params.append(0)
+            else:  # settling — 保持当前 settled_amount，清除 settled_time
                 updates.append("settled_time = NULL")
 
         if not updates:
@@ -322,15 +345,27 @@ async def update_record(record_id: int, req: RecordUpdate):
 
 @app.put("/api/records/{record_id}/status")
 async def update_status(record_id: int, req: StatusUpdate):
-    if req.status not in ("paid", "unpaid"):
+    if req.status not in ("paid", "unpaid", "settling"):
         return JSONResponse({"success": False, "error": "状态值无效"}, status_code=400)
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM settlements WHERE id = ? AND is_deleted = 0", (record_id,)).fetchone()
         if not row:
             return JSONResponse({"success": False, "error": "记录不存在"}, status_code=404)
-        settled_time = get_now_iso() if req.status == "paid" else None
-        conn.execute("UPDATE settlements SET status = ?, settled_time = ?, updated_at = ? WHERE id = ?",
-                     (req.status, settled_time, get_now_iso(), record_id))
+
+        if req.status == "paid":
+            settled_time = get_now_iso()
+            settled_amount = row["settlement_amount"]
+        elif req.status == "unpaid":
+            settled_time = None
+            settled_amount = 0
+        else:  # settling — 保持当前 settled_amount，清除 settled_time
+            settled_time = None
+            settled_amount = row["settled_amount"] if row["settled_amount"] > 0 else 0
+
+        conn.execute(
+            "UPDATE settlements SET status = ?, settled_time = ?, settled_amount = ?, updated_at = ? WHERE id = ?",
+            (req.status, settled_time, settled_amount, get_now_iso(), record_id)
+        )
         row = conn.execute("SELECT * FROM settlements WHERE id = ?", (record_id,)).fetchone()
     return JSONResponse({"success": True, "data": record_to_dict(row)})
 
@@ -387,9 +422,12 @@ async def stats_by_person(
                 SUM(profit_amount) as total_profit,
                 SUM(tax_amount) as total_tax,
                 SUM(settlement_amount) as total_settlement,
+                SUM(settled_amount) as total_settled,
                 SUM(CASE WHEN status = 'paid' THEN settlement_amount ELSE 0 END) as paid_amount,
+                SUM(CASE WHEN status = 'settling' THEN settlement_amount ELSE 0 END) as settling_amount,
                 SUM(CASE WHEN status = 'unpaid' THEN settlement_amount ELSE 0 END) as unpaid_amount,
                 SUM(CASE WHEN status = 'paid' THEN 1 ELSE 0 END) as paid_count,
+                SUM(CASE WHEN status = 'settling' THEN 1 ELSE 0 END) as settling_count,
                 SUM(CASE WHEN status = 'unpaid' THEN 1 ELSE 0 END) as unpaid_count
             FROM settlements WHERE {where_clause}
             GROUP BY person_name
@@ -411,7 +449,9 @@ async def stats_by_person(
                 SUM(profit_amount) as profit,
                 SUM(tax_amount) as tax,
                 SUM(settlement_amount) as settlement,
+                SUM(settled_amount) as settled,
                 SUM(CASE WHEN status = 'paid' THEN settlement_amount ELSE 0 END) as paid,
+                SUM(CASE WHEN status = 'settling' THEN settlement_amount ELSE 0 END) as settling,
                 SUM(CASE WHEN status = 'unpaid' THEN settlement_amount ELSE 0 END) as unpaid
             FROM settlements WHERE {where_clause}
             GROUP BY person_name, period
@@ -427,10 +467,13 @@ async def stats_by_person(
             "total_profit": round(r["total_profit"] or 0, 2),
             "total_tax": round(r["total_tax"] or 0, 2),
             "total_settlement": round(r["total_settlement"] or 0, 2),
+            "total_settled": round(r["total_settled"] or 0, 2),
             "paid_amount": round(r["paid_amount"] or 0, 2),
+            "settling_amount": round(r["settling_amount"] or 0, 2),
             "unpaid_amount": round(r["unpaid_amount"] or 0, 2),
             "record_count": r["record_count"],
             "paid_count": r["paid_count"],
+            "settling_count": r["settling_count"],
             "unpaid_count": r["unpaid_count"],
             "periods": [],
         }
@@ -444,7 +487,9 @@ async def stats_by_person(
                 "profit": round(r["profit"] or 0, 2),
                 "tax": round(r["tax"] or 0, 2),
                 "settlement": round(r["settlement"] or 0, 2),
+                "settled": round(r["settled"] or 0, 2),
                 "paid": round(r["paid"] or 0, 2),
+                "settling": round(r["settling"] or 0, 2),
                 "unpaid": round(r["unpaid"] or 0, 2),
             })
 
@@ -692,7 +737,7 @@ async def export_records(
 ):
     conditions = ["is_deleted = 0"]
     params = []
-    if status and status in ("paid", "unpaid"):
+    if status and status in ("paid", "unpaid", "settling"):
         conditions.append("status = ?")
         params.append(status)
     if company_name:

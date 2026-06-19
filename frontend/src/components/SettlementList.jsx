@@ -14,7 +14,7 @@ import {
 export default function SettlementList() {
   const [records, setRecords] = useState([]);
   const [total, setTotal] = useState(0);
-  const [summary, setSummary] = useState({ total_original: 0, total_profit: 0, total_tax: 0, total_settlement: 0, count: 0 });
+  const [summary, setSummary] = useState({ total_original: 0, total_profit: 0, total_tax: 0, total_settlement: 0, total_settled: 0, count: 0 });
   const [loading, setLoading] = useState(false);
 
   // 筛选条件
@@ -67,6 +67,7 @@ export default function SettlementList() {
       company_name: record.company_name,
       tax_number: record.tax_number,
       original_amount: record.original_amount,
+      settled_amount: record.settled_amount ?? 0,
       entry_time: record.entry_time,
       remark: record.remark || '',
     });
@@ -93,7 +94,9 @@ export default function SettlementList() {
   // ── 状态切换 ──────────────────────────────────────────
 
   const toggleStatus = async (record) => {
-    const newStatus = record.status === 'paid' ? 'unpaid' : 'paid';
+    // 三态循环：unpaid → settling → paid → unpaid
+    const cycle = { unpaid: 'settling', settling: 'paid', paid: 'unpaid' };
+    const newStatus = cycle[record.status] || 'unpaid';
     try {
       await updateRecordStatus(record.id, newStatus);
       fetchRecords();
@@ -146,6 +149,9 @@ export default function SettlementList() {
   const editProfit = (editForm.original_amount || 0) * (records.find(r => r.id === editingId)?.profit_rate || 0.04);
   const editTax = (editForm.original_amount || 0) * (records.find(r => r.id === editingId)?.tax_rate || 0.01);
   const editSettlement = (editForm.original_amount || 0) * (1 - (records.find(r => r.id === editingId)?.profit_rate || 0.04) - (records.find(r => r.id === editingId)?.tax_rate || 0.01));
+  const editSettled = editForm.settled_amount || 0;
+  // 编辑时根据已结金额推断状态预览
+  const editStatusPreview = editSettled <= 0 ? 'unpaid' : (editSettled >= editSettlement - 0.01 ? 'paid' : 'settling');
 
   return (
     <div className="p-6">
@@ -183,6 +189,7 @@ export default function SettlementList() {
           >
             <option value="">全部状态</option>
             <option value="unpaid">尚未结清</option>
+            <option value="settling">正在结算</option>
             <option value="paid">已结清</option>
           </select>
           <input
@@ -227,7 +234,7 @@ export default function SettlementList() {
       </div>
 
       {/* 统计卡片 */}
-      <div className="grid grid-cols-4 gap-4 mb-4">
+      <div className="grid grid-cols-5 gap-4 mb-4">
         <div className="bg-white rounded-lg border border-gray-200 p-4">
           <p className="text-xs text-gray-500 mb-1">原始金额合计</p>
           <p className="text-lg font-bold text-gray-800">¥ {formatAmount(summary.total_original)}</p>
@@ -241,8 +248,12 @@ export default function SettlementList() {
           <p className="text-lg font-bold text-orange-600">¥ {formatAmount(summary.total_tax)}</p>
         </div>
         <div className="bg-white rounded-lg border border-gray-200 p-4">
-          <p className="text-xs text-gray-500 mb-1">结算金额合计 (95%)</p>
+          <p className="text-xs text-gray-500 mb-1">应结金额合计 (95%)</p>
           <p className="text-lg font-bold text-green-600">¥ {formatAmount(summary.total_settlement)}</p>
+        </div>
+        <div className="bg-white rounded-lg border border-gray-200 p-4">
+          <p className="text-xs text-gray-500 mb-1">已结金额合计</p>
+          <p className="text-lg font-bold text-cyan-600">¥ {formatAmount(summary.total_settled)}</p>
         </div>
       </div>
 
@@ -269,6 +280,7 @@ export default function SettlementList() {
                 <th className="px-3 py-3 text-right font-medium">盈利</th>
                 <th className="px-3 py-3 text-right font-medium">税费</th>
                 <th className="px-3 py-3 text-right font-medium">结算金额</th>
+                <th className="px-3 py-3 text-right font-medium">已结金额</th>
                 <th className="px-3 py-3 text-left font-medium">录入时间</th>
                 <th className="px-3 py-3 text-center font-medium">状态</th>
                 <th className="px-3 py-3 text-center font-medium">操作</th>
@@ -310,13 +322,22 @@ export default function SettlementList() {
                         ¥ {formatAmount(editSettlement)}
                       </td>
                       <td className="px-3 py-2">
+                        <input type="number" step="0.01" value={editSettled}
+                          onChange={(e) => setEditForm({ ...editForm, settled_amount: parseFloat(e.target.value) || 0 })}
+                          className="w-24 px-2 py-1 border border-primary-300 rounded text-sm text-right" />
+                      </td>
+                      <td className="px-3 py-2">
                         <input type="datetime-local" value={editForm.entry_time?.slice(0, 16) || ''}
                           onChange={(e) => setEditForm({ ...editForm, entry_time: e.target.value })}
                           className="w-full px-2 py-1 border border-primary-300 rounded text-sm" />
                       </td>
                       <td className="px-3 py-2 text-center">
-                        <span className={`px-2 py-1 rounded text-xs ${record.status === 'paid' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
-                          {record.status === 'paid' ? '已结清' : '尚未结清'}
+                        <span className={`px-2 py-1 rounded text-xs ${
+                          editStatusPreview === 'paid' ? 'bg-green-100 text-green-700' :
+                          editStatusPreview === 'settling' ? 'bg-blue-100 text-blue-700' :
+                          'bg-orange-100 text-orange-700'
+                        }`}>
+                          {editStatusPreview === 'paid' ? '已结清' : editStatusPreview === 'settling' ? '正在结算' : '尚未结清'}
                         </span>
                       </td>
                       <td className="px-3 py-2">
@@ -342,6 +363,7 @@ export default function SettlementList() {
                       <td className="px-3 py-3 text-right text-blue-600">¥ {formatAmount(record.profit_amount)}</td>
                       <td className="px-3 py-3 text-right text-orange-600">¥ {formatAmount(record.tax_amount)}</td>
                       <td className="px-3 py-3 text-right text-green-600 font-medium">¥ {formatAmount(record.settlement_amount)}</td>
+                      <td className="px-3 py-3 text-right text-cyan-600 font-medium">¥ {formatAmount(record.settled_amount)}</td>
                       <td className="px-3 py-3 text-gray-500 text-xs">{formatTime(record.entry_time)}</td>
                       <td className="px-3 py-3 text-center">
                         <button
@@ -349,11 +371,15 @@ export default function SettlementList() {
                           className={`px-2 py-1 rounded text-xs font-medium cursor-pointer transition-colors ${
                             record.status === 'paid'
                               ? 'bg-green-100 text-green-700 hover:bg-green-200'
+                              : record.status === 'settling'
+                              ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
                               : 'bg-orange-100 text-orange-700 hover:bg-orange-200'
                           }`}
                         >
                           {record.status === 'paid' ? (
                             <span className="flex items-center gap-1"><CheckCircle2 size={12} /> 已结清</span>
+                          ) : record.status === 'settling' ? (
+                            <span className="flex items-center gap-1"><RefreshCw size={12} /> 正在结算</span>
                           ) : (
                             <span className="flex items-center gap-1"><Clock size={12} /> 尚未结清</span>
                           )}

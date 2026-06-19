@@ -32,6 +32,7 @@ def init_db():
                 profit_amount       REAL NOT NULL DEFAULT 0,
                 tax_amount          REAL NOT NULL DEFAULT 0,
                 settlement_amount   REAL NOT NULL DEFAULT 0,
+                settled_amount      REAL NOT NULL DEFAULT 0,
                 entry_time          TEXT NOT NULL,
                 status              TEXT NOT NULL DEFAULT 'unpaid',
                 settled_time        TEXT,
@@ -79,6 +80,19 @@ def init_db():
                 logger.info("数据库迁移完成: settlement_rate → profit_rate + tax_rate")
         except Exception:
             pass  # 新数据库，无需迁移
+
+        # 迁移：为旧表添加 settled_amount 列（如果不存在）
+        try:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(settlements)").fetchall()]
+            if "settled_amount" not in cols:
+                conn.execute("ALTER TABLE settlements ADD COLUMN settled_amount REAL NOT NULL DEFAULT 0")
+                # 旧数据迁移：已结清记录补全 settled_amount，未结清保持 0
+                conn.execute("UPDATE settlements SET settled_amount = settlement_amount WHERE status = 'paid' AND is_deleted = 0")
+                conn.commit()
+                import logging
+                logging.getLogger("database").info("数据库迁移完成: 新增 settled_amount 列")
+        except Exception:
+            pass
 
         conn.commit()
 
@@ -155,6 +169,15 @@ def calc_amounts(original_amount: float, profit_rate: float, tax_rate: float) ->
     }
 
 
+def derive_status(settled_amount: float, settlement_amount: float) -> str:
+    """根据已结金额自动推断状态：unpaid / settling / paid"""
+    if settled_amount <= 0:
+        return "unpaid"
+    if settled_amount >= settlement_amount - 0.01:
+        return "paid"
+    return "settling"
+
+
 def record_to_dict(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -167,6 +190,7 @@ def record_to_dict(row: sqlite3.Row) -> dict:
         "profit_amount": round(row["profit_amount"], 2),
         "tax_amount": round(row["tax_amount"], 2),
         "settlement_amount": round(row["settlement_amount"], 2),
+        "settled_amount": round(row["settled_amount"], 2),
         "entry_time": row["entry_time"],
         "status": row["status"],
         "settled_time": row["settled_time"],

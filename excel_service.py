@@ -15,6 +15,7 @@ from openpyxl.utils import get_column_letter
 # 状态中文映射
 STATUS_MAP = {
     "paid": "已结清",
+    "settling": "正在结算",
     "unpaid": "尚未结清",
 }
 
@@ -30,6 +31,7 @@ HEADERS = [
     ("税费比例", 10),
     ("税费金额", 14),
     ("结算金额", 14),
+    ("已结金额", 14),
     ("录入时间", 22),
     ("状态", 10),
     ("结清时间", 22),
@@ -73,6 +75,8 @@ def export_to_excel(records: list[dict]) -> bytes:
     tax_fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")         # 税费 — 浅橙
     settlement_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")  # 结算 — 浅绿
 
+    settled_fill = PatternFill(start_color="DDEBF7", end_color="DDEBF7", fill_type="solid")    # 已结金额 — 浅蓝
+
     # ── 写表头 ──────────────────────────────────
     for col_idx, (title, width) in enumerate(HEADERS, 1):
         cell = ws.cell(row=1, column=col_idx, value=title)
@@ -97,6 +101,7 @@ def export_to_excel(records: list[dict]) -> bytes:
             f'{record.get("tax_rate", 0.01) * 100:.1f}%',
             record.get("tax_amount", 0),
             record.get("settlement_amount", 0),
+            record.get("settled_amount", 0),
             record.get("entry_time", ""),
             STATUS_MAP.get(record.get("status", ""), ""),
             record.get("settled_time", "") or "",
@@ -123,6 +128,9 @@ def export_to_excel(records: list[dict]) -> bytes:
             elif col_idx == 10: # 结算金额
                 cell.number_format = '#,##0.00'
                 cell.fill = settlement_fill
+            elif col_idx == 11: # 已结金额
+                cell.number_format = '#,##0.00'
+                cell.fill = settled_fill
 
     # ── 底部统计行 ──────────────────────────────
     summary_row = len(records) + 2
@@ -130,7 +138,9 @@ def export_to_excel(records: list[dict]) -> bytes:
     total_profit = sum(r.get("profit_amount", 0) or 0 for r in records)
     total_tax = sum(r.get("tax_amount", 0) or 0 for r in records)
     total_settlement = sum(r.get("settlement_amount", 0) or 0 for r in records)
+    total_settled = sum(r.get("settled_amount", 0) or 0 for r in records)
     unpaid_count = sum(1 for r in records if r.get("status") == "unpaid")
+    settling_count = sum(1 for r in records if r.get("status") == "settling")
     paid_count = sum(1 for r in records if r.get("status") == "paid")
 
     # 合计标签（合并前4列）
@@ -177,12 +187,20 @@ def export_to_excel(records: list[dict]) -> bytes:
     cell.number_format = '#,##0.00'
     cell.fill = settlement_fill
 
+    # 合计已结金额
+    cell = ws.cell(row=summary_row, column=11, value=total_settled)
+    cell.font = Font(name="微软雅黑", size=11, bold=True)
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    cell.border = thin_border
+    cell.number_format = '#,##0.00'
+    cell.fill = settled_fill
+
     # 统计信息
-    info_text = f"已结清 {paid_count} 笔 / 未结清 {unpaid_count} 笔 / 共 {len(records)} 笔"
-    cell = ws.cell(row=summary_row, column=11, value=info_text)
+    info_text = f"已结清 {paid_count} 笔 / 正在结算 {settling_count} 笔 / 未结清 {unpaid_count} 笔 / 共 {len(records)} 笔"
+    cell = ws.cell(row=summary_row, column=12, value=info_text)
     cell.font = Font(name="微软雅黑", size=10, color="666666")
     cell.alignment = Alignment(horizontal="center", vertical="center")
-    ws.merge_cells(start_row=summary_row, start_column=11, end_row=summary_row, end_column=15)
+    ws.merge_cells(start_row=summary_row, start_column=12, end_row=summary_row, end_column=16)
 
     # ── 冻结首行 ────────────────────────────────
     ws.freeze_panes = "A2"

@@ -48,9 +48,11 @@ export default function PersonStats() {
     profit: acc.profit + (p.total_profit || 0),
     tax: acc.tax + (p.total_tax || 0),
     settlement: acc.settlement + (p.total_settlement || 0),
+    settled: acc.settled + (p.total_settled || 0),
     paid: acc.paid + (p.paid_amount || 0),
+    settling: acc.settling + (p.settling_amount || 0),
     unpaid: acc.unpaid + (p.unpaid_amount || 0),
-  }), { original: 0, profit: 0, tax: 0, settlement: 0, paid: 0, unpaid: 0 });
+  }), { original: 0, profit: 0, tax: 0, settlement: 0, settled: 0, paid: 0, settling: 0, unpaid: 0 });
 
   return (
     <div className="p-6">
@@ -107,8 +109,8 @@ export default function PersonStats() {
         </div>
       </div>
 
-      {/* 汇总卡片 — 5个 */}
-      <div className="grid grid-cols-5 gap-4 mb-4">
+      {/* 汇总卡片 — 6个 */}
+      <div className="grid grid-cols-6 gap-4 mb-4">
         <div className="bg-white rounded-lg border border-gray-200 p-4">
           <p className="text-xs text-gray-500 mb-1">原始金额总计</p>
           <p className="text-lg font-bold text-gray-800">¥ {formatAmount(grandTotal.original)}</p>
@@ -124,6 +126,10 @@ export default function PersonStats() {
         <div className="bg-white rounded-lg border border-green-200 p-4 bg-green-50/30">
           <p className="text-xs text-green-500 mb-1">已结清金额</p>
           <p className="text-lg font-bold text-green-600">¥ {formatAmount(grandTotal.paid)}</p>
+        </div>
+        <div className="bg-white rounded-lg border border-blue-200 p-4 bg-blue-50/30">
+          <p className="text-xs text-blue-500 mb-1">正在结算金额</p>
+          <p className="text-lg font-bold text-blue-600">¥ {formatAmount(grandTotal.settling)}</p>
         </div>
         <div className="bg-white rounded-lg border border-gray-200 p-4">
           <p className="text-xs text-gray-500 mb-1">未结清金额</p>
@@ -149,6 +155,9 @@ export default function PersonStats() {
             const paidPct = person.total_settlement > 0
               ? (person.paid_amount / person.total_settlement * 100).toFixed(1)
               : 0;
+            const settlingPct = person.total_settlement > 0
+              ? (person.settling_amount / person.total_settlement * 100).toFixed(1)
+              : 0;
 
             return (
               <div key={person.person_name} className="bg-white rounded-lg border border-gray-200 overflow-hidden">
@@ -165,7 +174,7 @@ export default function PersonStats() {
                       <div>
                         <p className="font-semibold text-gray-800">{person.person_name || '未命名'}</p>
                         <p className="text-xs text-gray-500">
-                          {person.record_count} 条记录 | 已结清 {person.paid_count} 条 | 未结清 {person.unpaid_count} 条
+                          {person.record_count} 条记录 | 已结清 {person.paid_count} 条 | 正在结算 {person.settling_count || 0} 条 | 未结清 {person.unpaid_count} 条
                         </p>
                       </div>
                     </div>
@@ -194,16 +203,20 @@ export default function PersonStats() {
                     </div>
                   </div>
 
-                  {/* 结清进度条 */}
+                  {/* 结清进度条 — 三段式 */}
                   <div className="mt-3">
                     <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
                       <span>结清进度</span>
-                      <span>{paidPct}%</span>
+                      <span>已结清 {paidPct}% | 正在结算 {settlingPct}%</span>
                     </div>
-                    <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                    <div className="h-2 bg-gray-100 rounded-full overflow-hidden flex">
                       <div
-                        className="h-full bg-green-500 rounded-full transition-all"
+                        className="h-full bg-green-500 transition-all"
                         style={{ width: `${paidPct}%` }}
+                      />
+                      <div
+                        className="h-full bg-blue-400 transition-all"
+                        style={{ width: `${settlingPct}%` }}
                       />
                     </div>
                   </div>
@@ -224,6 +237,7 @@ export default function PersonStats() {
                           <th className="px-4 py-2 text-right font-medium text-orange-600">税费 1%</th>
                           <th className="px-4 py-2 text-right font-medium">结算金额 95%</th>
                           <th className="px-4 py-2 text-right font-medium">已结清</th>
+                          <th className="px-4 py-2 text-right font-medium text-blue-600">正在结算</th>
                           <th className="px-4 py-2 text-right font-medium">未结清</th>
                         </tr>
                       </thead>
@@ -237,6 +251,7 @@ export default function PersonStats() {
                             <td className="px-4 py-2 text-right text-orange-600">¥ {formatAmount(period.tax)}</td>
                             <td className="px-4 py-2 text-right text-green-600 font-medium">¥ {formatAmount(period.settlement)}</td>
                             <td className="px-4 py-2 text-right text-green-700">¥ {formatAmount(period.paid)}</td>
+                            <td className="px-4 py-2 text-right text-blue-700">¥ {formatAmount(period.settling)}</td>
                             <td className="px-4 py-2 text-right text-orange-700">¥ {formatAmount(period.unpaid)}</td>
                           </tr>
                         ))}
